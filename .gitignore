@@ -10,3 +10,8 @@ docs/
 # wrong one. `install.sh` places the binary next to the skill; see
 # engine/README.md for how to obtain one for a platform this was not built on.
 engine/target/
+
+# CI output dropped into the working tree by hand or by an editor.
+# 2,400 lines of runner logs is not a source file, and a fresh clone does not
+# need it to pass.
+logs.txt
