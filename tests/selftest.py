@@ -357,8 +357,9 @@ def main():
                   % (m.group(1) if m else None, lic_head.split('\n')[0]))
 
             check('SKILL.md frontmatter has no unknown keys',
-                  set(fm) <= {'name', 'description', 'version', 'argument-hint',
-                              'license', 'allowed-tools', 'model'},
+                  set(fm) <= {'name', 'description', 'version', 'user-invocable',
+                              'argument-hint', 'license', 'allowed-tools',
+                              'model', 'disable-model-invocation'},
                   'unexpected frontmatter keys: %r' % sorted(set(fm) - {
                       'name', 'description', 'version', 'argument-hint',
                       'license', 'allowed-tools', 'model'}))
@@ -401,6 +402,33 @@ def main():
         check('every reference SKILL.md names exists (%d)' % len(named),
               not missing, 'missing: %r' % missing)
 
+        # Commands are a convenience surface, and the failure mode is a command
+        # that is advertised but unreachable: a slash command the agent cannot
+        # route is worse than no command, because the user believes it ran.
+        # Quotes are optional in YAML, and the value itself contains brackets,
+        # so the pattern has to tolerate `hint: "[a|b]"`, `hint: [a|b]` and a
+        # list that includes `|`.
+        cmds = re.search(r'^argument-hint:\s*"?\[([^\]]+)\]"?\s*$',
+                         skill_md, re.M)
+        check('SKILL.md declares user-invocable', 'user-invocable: true' in skill_md,
+              'without it the agent may not expose the slash command at all')
+        check('SKILL.md declares an argument-hint', cmds is not None)
+        declared = [c.strip() for c in cmds.group(1).split('|')] if cmds else []
+        table = re.findall(r'^\| `([a-z]+)`(?:\s*\|[^|]*)?\s*\|', skill_md, re.M)
+        check('every advertised command has a dispatch section',
+              all(re.search(r'\*\*`%s`\*\*\s*—' % re.escape(c), skill_md)
+                  for c in declared),
+              'missing dispatch for: %r' % [c for c in declared
+                  if not re.search(r'\*\*`%s`\*\*\s*—' % re.escape(c), skill_md)])
+        # Equality, not containment. `<=` would pass if a row were deleted
+        # from the table, which is exactly the mutation worth catching: a
+        # command still routed by `argument-hint` but no longer documented is
+        # how a command quietly becomes folklore.
+        check('the command table and the argument-hint list the same commands',
+              set(table) == set(declared),
+              'only in table: %r  only in hint: %r'
+              % (sorted(set(table) - set(declared)),
+                 sorted(set(declared) - set(table))))
         # The batch workflow is the thing that keeps quality from decaying on a
         # long run, so its three load-bearing steps must all be present.
         for phrase, why in [('batch size', 'the size is the user\'s call'),
@@ -486,8 +514,8 @@ def main():
             # inside a case into \n and desynchronise the two line counts, which
             # reads as thousands of escaping mismatches that are really one
             # transport bug. Split on \n only, for the mirror-image reason —
-            # str.splitlines() also breaks on \x0b, \x0c, \x1c and  ,
-            # so it over-counts lines the engine did emit.
+            # str.splitlines() also breaks on \x0b, \x0c and \x1c, so it
+            # over-counts the lines the engine actually emitted.
             r = subprocess.run([binary, '__escape-diff'],
                                input=payload.encode('utf-8'),
                                capture_output=True)

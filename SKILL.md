@@ -12,7 +12,8 @@ description: >
   "site", "skill", or "generator", and even if the project is not the one this
   skill was last used on.
 version: 1.1.0
-argument-hint: "[init|scan|<project-path>]"
+user-invocable: true
+argument-hint: "[init|scan|plan|write|build|check|split|renumber|next]"
 license: MIT
 ---
 
@@ -97,6 +98,40 @@ yours to hold.
 </no_emoji>
 </invariants>
 
+## Mode dispatch
+
+When invoked with a COMMAND argument, follow that command's section and skip
+the rest. The sections are written to be self-contained about *what to do next*; the
+invariants above apply to all of them.
+
+- **`init`** — run the scaffolder, then report the site path and what was
+  written. Do not begin planning lessons; that is `plan`.
+- **`scan`** — run `scan.py` on the argument (or the current project), report the
+  inventory, and stop. Do not write `pages.toml`.
+- **`plan`** — read the project properly, design the phases, write `pages.toml`,
+  then **present the plan and stop.** See [Plan first, then batch](#plan-first-then-batch).
+- **`write`** — take the batch size from the argument, or ask for one if absent.
+  Author that many lessons, build, validate, report, and ask whether to continue.
+  See [3. Author in batches](#3-author-in-batches).
+- **`build`** — run `build.py` and `index.py`, then both validators. Report the
+  output. Change no files under `content/`.
+- **`check`** — run the validator only, never rebuilding first. `fragments`
+  validates authored content without needing a build; `pages` validates rendered
+  output; no argument does both, fragments first.
+- **`split`** — read `references/splitting.md` and follow it. Stop and show the
+  proposed split before editing anything.
+- **`renumber`** — read `references/renumbering.md` and follow it. Never rewrite
+  numbers without classifying each occurrence first.
+- **`next`** — the same as `write` with the size from the last agreed batch.
+  "Keep going" from the user means this, and it is a new agreement rather than an
+  extension of the old one.
+
+Invoked with **no argument**, or with free text, do the obvious thing: if the
+user describes what they want in their own words, follow the workflow below from
+the appropriate step. Do not ask which command they meant when the request is
+clear — asking them to name a mode is a worse experience than reading the
+request.
+
 ---
 
 ## Plan first, then batch
@@ -128,6 +163,38 @@ not a continuation of the last one.
 
 ---
 
+## Commands
+
+Invoked as `/clone-site COMMAND`. Optional argument narrows the target.
+
+| Command | Argument | Does | Go to |
+|---|---|---|---|
+| `init` | project path | Scaffold a site: copy the generator in, write the config, build, validate. | [below](#commands) |
+| `scan` | project path | Inventory the repo and draft a step order. | [step 1](#1-inventory-the-project) |
+| `plan` | project path | Read the project, design the phases, write `pages.toml`, present the plan. | [step 2](#2-design-the-curriculum) |
+| `write` | batch size | Author that many lessons, then stop and report. | [step 3](#3-author-in-batches) |
+| `build` | — | Render every page and validate. | [step 4](#4-build-and-validate) |
+| `check` | `fragments` \| `pages` | Validate without rebuilding. | [step 4](#4-build-and-validate) |
+| `split` | step number | Break one oversized lesson into several. | `references/splitting.md` |
+| `renumber` | — | Shift step numbers after an insert, delete, or split. | `references/renumbering.md` |
+| `next` | — | Continue the current batch run. | [batch workflow](#plan-first-then-batch) |
+
+`init` with no argument scaffolds in the current directory. It is the only
+command that copies files into a project.
+
+**These are modes of one workflow, not separate tools.** `plan` → `write` →
+`build` is the normal loop; the others exist because those steps are the ones
+that get interrupted or need redoing. Invoking `build` alone is fine — it is
+idempotent.
+
+**`split` and `renumber` are almost always used together.** Splitting shifts
+every later number, so run `split` then `renumber` unless the split is at the end
+of the site. Both carry their own reference file, because both are the kind of
+bulk edit that silently corrupts a large site: on the 492-lesson reference site,
+one blind numeric remap broke ~150 pages and every validator still passed.
+
+---
+
 ## Reading a reference
 
 Only when you reach the step below. Each is short and specific; there is no need
@@ -137,6 +204,8 @@ to load one before you know you need it.
 |---|---|
 | design the lesson order, or split a big file | `references/curriculum.md` |
 | write the first fragment | `references/authoring.md` |
+| split one lesson into several | `references/splitting.md` |
+| shift step numbers after any insert, delete, or split | `references/renumbering.md` |
 | do a bulk edit: renumber, retarget, restructure | `references/pitfalls.md` |
 
 ---

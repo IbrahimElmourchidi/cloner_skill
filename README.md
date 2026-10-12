@@ -153,6 +153,29 @@ project's own structure rather than a generic one.
   as a match-and-refuse list
 - `engine/README.md` — the Rust engine: status, what is verified, how
 
+## Commands
+
+Invoked as `/clone-site COMMAND` once the agent has restarted.
+
+| Command | Argument | Does |
+|---|---|---|
+| `init` | project path | Scaffold a site: copy the generator in, write the config, build, validate |
+| `scan` | project path | Inventory the repo and draft a step order |
+| `plan` | project path | Read the project, design phases, write `pages.toml`, present the plan |
+| `write` | batch size | Author that many lessons, then stop and report |
+| `build` | — | Render every page and validate |
+| `check` | `fragments` \| `pages` | Validate without rebuilding |
+| `split` | step number | Break one oversized lesson into several |
+| `renumber` | — | Shift step numbers after an insert, delete, or split |
+| `next` | — | Continue the current batch run |
+
+They are modes of one workflow, not separate tools: `plan` → `write` → `build`
+is the loop, and the rest exist because those steps get interrupted or redone.
+Invoking `build` on its own is fine — it is idempotent.
+
+`split` and `renumber` are almost always used together, since splitting shifts
+every later number. Both carry their own reference file.
+
 ## How it works
 
 The skill is two tiers. The rules you must always follow are inlined in
