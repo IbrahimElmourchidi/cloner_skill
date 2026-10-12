@@ -163,18 +163,123 @@ Invoked as `/clone-site COMMAND` once the agent has restarted.
 | `scan` | project path | Inventory the repo and draft a step order |
 | `plan` | project path | Read the project, design phases, write `pages.toml`, present the plan |
 | `write` | batch size | Author that many lessons, then stop and report |
+| `appendix` | topic, or none | Propose the appendix topics, then write them |
 | `build` | — | Render every page and validate |
 | `check` | `fragments` \| `pages` | Validate without rebuilding |
 | `split` | step number | Break one oversized lesson into several |
 | `renumber` | — | Shift step numbers after an insert, delete, or split |
 | `next` | — | Continue the current batch run |
 
-They are modes of one workflow, not separate tools: `plan` → `write` → `build`
-is the loop, and the rest exist because those steps get interrupted or redone.
-Invoking `build` on its own is fine — it is idempotent.
+They are modes of one workflow, not separate tools: `plan` → `write` →
+`appendix` → `build` is the arc, and the rest exist because those steps get
+interrupted or redone. Invoking `build` on its own is fine — it is idempotent.
 
 `split` and `renumber` are almost always used together, since splitting shifts
 every later number. Both carry their own reference file.
+
+## Building a full site
+
+The order matters, and three of these steps are gates rather than work.
+
+```bash
+/clone-site init ~/code/my-project --name "My Project"   # 1
+/clone-site plan ~/code/my-project                      # 2  ← stops and asks
+/clone-site write 10                                    # 3  ← repeat until done
+/clone-site appendix                                    # 4  ← stops and asks
+/clone-site build                                      # 5
+```
+
+### 1. `init`
+
+Scaffolds `docs/site/` in the project: copies the generator in, writes the
+config, builds, and validates. Exits non-zero if the result is not valid, so a
+green `init` means the plumbing works and everything after it is prose.
+
+### 2. `plan` — gate
+
+Reads the project properly, designs the phases, writes `pages.toml`, then
+**presents the plan and stops.** You approve or correct the order before a single
+lesson exists.
+
+The draft order `scan` produces is sorted by directory and then file size, which
+is a poor dependency order — it cannot see that one module imports another — so
+this step is an argument with a draft, not a rubber stamp. Ask for just the
+inventory with `/clone-site scan ~/code/my-project`.
+
+### 3. `write 10` — the loop
+
+Authors 10 lessons, builds, validates, then reports and asks whether to
+continue. Repeat with `/clone-site write 25`, or `/clone-site next` to take the
+last agreed size again.
+
+```bash
+/clone-site write 10
+/clone-site write 25        # a bigger batch once the page shape has settled
+```
+
+The batch size is yours to set. Batching exists because quality decays on a long
+run and nothing detects it — there is no validator for "this page is less careful
+than the previous one" — so the stopping point has to be a decision rather than
+an accident.
+
+### 4. `appendix` — gate
+
+Writes the appendix: deep dives, audits, checklists, background on a decision
+that spans many steps. **Stops and lists the topics before writing any**, for the
+same reason `plan` does — appendix scope is a judgement call, and nine good pages
+beat twenty-one nobody wanted.
+
+Pass a topic to skip the proposal: `/clone-site appendix "how the riverpod
+codegen works"`.
+
+Worth doing *after* the lessons rather than before. An appendix is usually the
+result of having understood the lessons, and writing one first produces
+background nobody had earned yet.
+
+### 5. `build`
+
+Renders every page and validates. Idempotent, and safe on its own at any point —
+including after `split` or `renumber`.
+
+```bash
+/clone-site build
+/clone-site check fragments   # validate authored content, no build needed
+```
+
+### Editing afterwards
+
+Adding one lesson:
+
+```bash
+/clone-site write 1
+```
+
+Changing the shape of the site — splitting a big file, inserting a step:
+
+```bash
+/clone-site split 87         # then, almost always:
+/clone-site renumber
+/clone-site build
+```
+
+Splitting shifts every later step number, so `renumber` follows it unless the
+split is at the end. Both earn their own commands because they are the edits that
+silently corrupt a large site: on a 492-lesson reference, one blind numeric
+remap turned a pixel width and an item count into step numbers and broke ~150
+pages with every validator still passing.
+
+### What each command refuses to do
+
+The gates are the point, not friction:
+
+| Command | Stops because |
+|---|---|
+| `plan` | Lesson order is a judgement call you own |
+| `write` | Quality decays on a long run; the batch boundary is the safeguard |
+| `appendix` | Scope is a judgement call, and it reads better after the lessons |
+
+None of them proceed on an assumption about what you wanted. If an assumption is
+wrong, say so and the command will change course rather than continue.
 
 ## How it works
 

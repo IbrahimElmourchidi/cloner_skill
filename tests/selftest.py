@@ -316,7 +316,13 @@ def main():
         os.makedirs(os.path.join(target, 'src'))
         open(os.path.join(target, 'src', 'a.py'), 'w').write('print(1)\n')
         env = dict(os.environ, HOME=fh, NO_COLOR='1')
-        r = subprocess.run([os.path.join(canon, 'bin', 'clone-site'), 'init', target,
+        wrapper = os.path.join(canon, 'bin', 'clone-site')
+        check('installed wrapper is executable',
+              os.access(wrapper, os.X_OK),
+              'git may have recorded mode 644 (a FUSE checkout reports every '
+              'file 0777, so the index gets it wrong); a fresh clone then '
+              'cannot execute the wrapper at all')
+        r = subprocess.run([wrapper, 'init', target,
                             '--name', 'T', '--out', 'site'],
                            capture_output=True, text=True, env=env, cwd=tmp)
         check('installed copy scaffolds a site from an unrelated cwd',
@@ -429,6 +435,23 @@ def main():
               'only in table: %r  only in hint: %r'
               % (sorted(set(table) - set(declared)),
                  sorted(set(declared) - set(table))))
+        # A gate that does not actually stop is worse than no gate at all: the user
+        # believes they were consulted, and they were not. Each gate has to name
+        # both the moment it stops and why that moment is the user's call.
+        dispatch = re.search(r'## Mode dispatch(.*?)\n## ', skill_md, re.S)
+        for gate in ('plan', 'write', 'appendix'):
+            line = re.search(r'^- \*\*`%s`\*\*\s*—(.*?)(?=\n- \*\*|\Z)' % gate,
+                             dispatch.group(1) if dispatch else '', re.S | re.M)
+            check('gate `%s` says it stops' % gate,
+                  line is not None and 'stop' in line.group(1).lower(),
+                  'the %s dispatch line must state that it stops' % gate)
+        gates_note = re.search(r'\*\*Three of them are gates.*?before\.', skill_md, re.S)
+        check('SKILL.md names the three gates and why each one exists',
+              gates_note is not None
+              and all(w in gates_note.group(0) for w in
+                      ('judgement call', 'quality decays')),
+              'the gates paragraph must give a reason for each')
+
         # The batch workflow is the thing that keeps quality from decaying on a
         # long run, so its three load-bearing steps must all be present.
         for phrase, why in [('batch size', 'the size is the user\'s call'),

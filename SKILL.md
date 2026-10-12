@@ -13,7 +13,7 @@ description: >
   skill was last used on.
 version: 1.1.0
 user-invocable: true
-argument-hint: "[init|scan|plan|write|build|check|split|renumber|next]"
+argument-hint: "[init|scan|plan|write|appendix|build|check|split|renumber|next]"
 license: MIT
 ---
 
@@ -111,8 +111,13 @@ invariants above apply to all of them.
 - **`plan`** — read the project properly, design the phases, write `pages.toml`,
   then **present the plan and stop.** See [Plan first, then batch](#plan-first-then-batch).
 - **`write`** — take the batch size from the argument, or ask for one if absent.
-  Author that many lessons, build, validate, report, and ask whether to continue.
-  See [3. Author in batches](#3-author-in-batches).
+  Author that many lessons, build, validate, then **stop** and report. Ask whether
+  to continue; never exceed the agreed batch without asking, because "keep going"
+  is a new agreement rather than an extension of the last one. See
+  [3. Author in batches](#3-author-in-batches).
+- **`appendix`** — read `references/appendix.md` and follow it. With no
+  argument, propose the topics and stop for approval before writing. With a topic,
+  write that one.
 - **`build`** — run `build.py` and `index.py`, then both validators. Report the
   output. Change no files under `content/`.
 - **`check`** — run the validator only, never rebuilding first. `fragments`
@@ -173,6 +178,7 @@ Invoked as `/clone-site COMMAND`. Optional argument narrows the target.
 | `scan` | project path | Inventory the repo and draft a step order. | [step 1](#1-inventory-the-project) |
 | `plan` | project path | Read the project, design the phases, write `pages.toml`, present the plan. | [step 2](#2-design-the-curriculum) |
 | `write` | batch size | Author that many lessons, then stop and report. | [step 3](#3-author-in-batches) |
+| `appendix` | topic, or none | Propose the appendix topics, then write them. | `references/appendix.md` |
 | `build` | — | Render every page and validate. | [step 4](#4-build-and-validate) |
 | `check` | `fragments` \| `pages` | Validate without rebuilding. | [step 4](#4-build-and-validate) |
 | `split` | step number | Break one oversized lesson into several. | `references/splitting.md` |
@@ -183,9 +189,15 @@ Invoked as `/clone-site COMMAND`. Optional argument narrows the target.
 command that copies files into a project.
 
 **These are modes of one workflow, not separate tools.** `plan` → `write` →
-`build` is the normal loop; the others exist because those steps are the ones
-that get interrupted or need redoing. Invoking `build` alone is fine — it is
+`appendix` → `build` is the arc; the others exist because those steps are the
+ones that get interrupted or need redoing. Invoking `build` alone is fine — it is
 idempotent.
+
+**Three of them are gates, not work:** `plan`, `write` and `appendix` stop and
+ask rather than continuing on an assumption. `plan` stops because lesson order is
+a judgement call the user owns. `write` stops at the batch boundary because
+quality decays on a long run and nothing detects it. `appendix` stops because its
+scope is a judgement call, and it reads better after the lessons than before.
 
 **`split` and `renumber` are almost always used together.** Splitting shifts
 every later number, so run `split` then `renumber` unless the split is at the end
@@ -204,6 +216,7 @@ to load one before you know you need it.
 |---|---|
 | design the lesson order, or split a big file | `references/curriculum.md` |
 | write the first fragment | `references/authoring.md` |
+| plan or write the appendix | `references/appendix.md` |
 | split one lesson into several | `references/splitting.md` |
 | shift step numbers after any insert, delete, or split | `references/renumbering.md` |
 | do a bulk edit: renumber, retarget, restructure | `references/pitfalls.md` |

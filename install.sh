@@ -266,6 +266,13 @@ else
         [ -e "$REPO/$item" ] || die "incomplete checkout: $item is missing from $REPO"
         cp -R "$REPO/$item" "$CANONICAL/$item"
     done
+    # Restore the executable bits explicitly rather than trusting `cp -R` to
+    # have carried them over. Whether it does depends on the filesystem the
+    # checkout landed on: a FUSE mount reports every file as 0777, so git
+    # records mode 644 and a fresh clone gets a wrapper nobody can execute.
+    # That is not hypothetical — it is what the CI log shows.
+    chmod +x "$CANONICAL/bin/clone-site" 2>/dev/null
+    find "$CANONICAL" -name '*.py' -exec chmod +x {} + 2>/dev/null
     find "$CANONICAL" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null
     ok "installed $(printf '%s\n' $PAYLOAD | wc -l | tr -d ' ') items"
 fi

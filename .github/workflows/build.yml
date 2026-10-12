@@ -89,16 +89,24 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
+          # Same reason: the cache action also expects to find the manifest.
+          working-directory: engine
           key: ${{ matrix.target }}
 
       # Platform-specific behaviour is exactly the class of bug that only shows
       # up on one OS — CRLF line endings change what a content fragment starts
       # with, and path separators change what a site directory resolves to.
       # So tests run on every platform, before the build rather than after it.
+      # The crate lives in engine/, not the repository root. `cargo` looks for
+      # Cargo.toml in the working directory and then *upward*, never downward, so
+      # running this from the root finds nothing — which is what every one of the
+      # five platforms reported before the working-directory was pinned.
       - name: Test
+        working-directory: engine
         run: cargo test --release --target ${{ matrix.target }}
 
       - name: Build
+        working-directory: engine
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Smoke test
