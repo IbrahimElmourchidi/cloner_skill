@@ -162,17 +162,20 @@ Invoked as `/clone-site COMMAND` once the agent has restarted.
 | `init` | project path | Scaffold a site: copy the generator in, write the config, build, validate |
 | `scan` | project path | Inventory the repo and draft a step order |
 | `plan` | project path | Read the project, design phases, write `pages.toml`, present the plan |
-| `write` | batch size | Author that many lessons, then stop and report |
 | `appendix` | topic, or none | Propose the appendix topics, then write them |
-| `build` | — | Render every page and validate |
+| `build` | batch size | Author that many lessons, write them to disk, render, validate, then stop and ask. **No argument renders only.** |
 | `check` | `fragments` \| `pages` | Validate without rebuilding |
 | `split` | step number | Break one oversized lesson into several |
 | `renumber` | — | Shift step numbers after an insert, delete, or split |
 | `next` | — | Continue the current batch run |
 
-They are modes of one workflow, not separate tools: `plan` → `write` →
-`appendix` → `build` is the arc, and the rest exist because those steps get
-interrupted or redone. Invoking `build` on its own is fine — it is idempotent.
+They are modes of one workflow, not separate tools: `plan` → `build N` (repeat)
+→ `appendix` → `build` is the arc, and the rest exist because those steps get
+interrupted or redone.
+
+`build` is both halves of the loop, split by whether you pass a number. With one
+it authors that many lessons and then renders and validates; without one it only
+renders, which is what keeps it safe to run after a `split` or a `renumber`.
 
 `split` and `renumber` are almost always used together, since splitting shifts
 every later number. Both carry their own reference file.
@@ -184,7 +187,7 @@ The order matters, and three of these steps are gates rather than work.
 ```bash
 /clone-site init ~/code/my-project --name "My Project"   # 1
 /clone-site plan ~/code/my-project                      # 2  ← stops and asks
-/clone-site write 10                                    # 3  ← repeat until done
+/clone-site build 10                                    # 3  ← repeat until done
 /clone-site appendix                                    # 4  ← stops and asks
 /clone-site build                                      # 5
 ```
@@ -206,16 +209,20 @@ is a poor dependency order — it cannot see that one module imports another —
 this step is an argument with a draft, not a rubber stamp. Ask for just the
 inventory with `/clone-site scan ~/code/my-project`.
 
-### 3. `write 10` — the loop
+### 3. `build 10` — the loop
 
-Authors 10 lessons, builds, validates, then reports and asks whether to
-continue. Repeat with `/clone-site write 25`, or `/clone-site next` to take the
-last agreed size again.
+Authors 10 lessons, writes them to disk, renders, validates, then reports and
+asks whether to continue.
 
 ```bash
-/clone-site write 10
-/clone-site write 25        # a bigger batch once the page shape has settled
+/clone-site build 10
+/clone-site build 25        # a bigger batch once the page shape has settled
+/clone-site next            # same size as the last batch
 ```
+
+Writing and building are one command because the halves are not separable in
+practice: a lesson written but not rendered cannot be validated, and the validator
+is what tells you the fragment is broken.
 
 The batch size is yours to set. Batching exists because quality decays on a long
 run and nothing detects it — there is no validator for "this page is less careful
@@ -238,8 +245,9 @@ background nobody had earned yet.
 
 ### 5. `build`
 
-Renders every page and validates. Idempotent, and safe on its own at any point —
-including after `split` or `renumber`.
+With no argument: renders every page and validates, changing no content.
+Idempotent, and safe on its own at any point — including after `split` or
+`renumber`.
 
 ```bash
 /clone-site build
@@ -251,7 +259,7 @@ including after `split` or `renumber`.
 Adding one lesson:
 
 ```bash
-/clone-site write 1
+/clone-site build 1
 ```
 
 Changing the shape of the site — splitting a big file, inserting a step:
@@ -275,7 +283,7 @@ The gates are the point, not friction:
 | Command | Stops because |
 |---|---|
 | `plan` | Lesson order is a judgement call you own |
-| `write` | Quality decays on a long run; the batch boundary is the safeguard |
+| `build N` | Quality decays on a long run; the batch boundary is the safeguard |
 | `appendix` | Scope is a judgement call, and it reads better after the lessons |
 
 None of them proceed on an assumption about what you wanted. If an assumption is

@@ -13,7 +13,7 @@ description: >
   skill was last used on.
 version: 1.1.0
 user-invocable: true
-argument-hint: "[init|scan|plan|write|appendix|build|check|split|renumber|next]"
+argument-hint: "[init|scan|plan|build|appendix|check|split|renumber|next]"
 license: MIT
 ---
 
@@ -110,16 +110,14 @@ invariants above apply to all of them.
   inventory, and stop. Do not write `pages.toml`.
 - **`plan`** — read the project properly, design the phases, write `pages.toml`,
   then **present the plan and stop.** See [Plan first, then batch](#plan-first-then-batch).
-- **`write`** — take the batch size from the argument, or ask for one if absent.
-  Author that many lessons, build, validate, then **stop** and report. Ask whether
-  to continue; never exceed the agreed batch without asking, because "keep going"
-  is a new agreement rather than an extension of the last one. See
-  [3. Author in batches](#3-author-in-batches).
+- **`build` with a number** — take the batch size from the argument. Author that
+  many lessons, write each to `content/NN.html`, render, validate, then **stop**
+  and report. Ask whether to continue; never exceed the agreed batch without
+  asking, because "keep going" is a new agreement rather than an extension of the
+  last one. See [3. Author and build](#3-author-and-build).
 - **`appendix`** — read `references/appendix.md` and follow it. With no
   argument, propose the topics and stop for approval before writing. With a topic,
   write that one.
-- **`build`** — run `build.py` and `index.py`, then both validators. Report the
-  output. Change no files under `content/`.
 - **`check`** — run the validator only, never rebuilding first. `fragments`
   validates authored content without needing a build; `pages` validates rendered
   output; no argument does both, fragments first.
@@ -127,7 +125,7 @@ invariants above apply to all of them.
   proposed split before editing anything.
 - **`renumber`** — read `references/renumbering.md` and follow it. Never rewrite
   numbers without classifying each occurrence first.
-- **`next`** — the same as `write` with the size from the last agreed batch.
+- **`next`** — the same as `build` with the size from the last agreed batch.
   "Keep going" from the user means this, and it is a new agreement rather than an
   extension of the old one.
 
@@ -154,9 +152,9 @@ batched, and the batch size is the user's call.
 3. **Ask for a batch size**, and offer a default. A good one is 8–15 for the
    first batch: enough to establish the rhythm and the page shape, few enough
    that a course correction is cheap.
-4. **Write that many lessons.** One fragment each, then build, then validate.
-   Stop at the batch boundary even if you have momentum — the point of a batch
-   is the stopping point.
+4. **Build that many lessons.** `/clone-site build N` writes each fragment,
+   renders, and validates. Stop at the batch boundary even if you have momentum —
+   the point of a batch is the stopping point.
 5. **At the end of every batch, report and ask:**
    - what was written, by phase
    - what `check_site.py` and `check_svg.py` said
@@ -177,9 +175,8 @@ Invoked as `/clone-site COMMAND`. Optional argument narrows the target.
 | `init` | project path | Scaffold a site: copy the generator in, write the config, build, validate. | [below](#commands) |
 | `scan` | project path | Inventory the repo and draft a step order. | [step 1](#1-inventory-the-project) |
 | `plan` | project path | Read the project, design the phases, write `pages.toml`, present the plan. | [step 2](#2-design-the-curriculum) |
-| `write` | batch size | Author that many lessons, then stop and report. | [step 3](#3-author-in-batches) |
 | `appendix` | topic, or none | Propose the appendix topics, then write them. | `references/appendix.md` |
-| `build` | — | Render every page and validate. | [step 4](#4-build-and-validate) |
+| `build` | batch size | Author that many lessons, write them to disk, render, validate, then stop and ask. **No argument renders only.** | [step 3](#3-author-and-build) |
 | `check` | `fragments` \| `pages` | Validate without rebuilding. | [step 4](#4-build-and-validate) |
 | `split` | step number | Break one oversized lesson into several. | `references/splitting.md` |
 | `renumber` | — | Shift step numbers after an insert, delete, or split. | `references/renumbering.md` |
@@ -188,14 +185,13 @@ Invoked as `/clone-site COMMAND`. Optional argument narrows the target.
 `init` with no argument scaffolds in the current directory. It is the only
 command that copies files into a project.
 
-**These are modes of one workflow, not separate tools.** `plan` → `write` →
-`appendix` → `build` is the arc; the others exist because those steps are the
-ones that get interrupted or need redoing. Invoking `build` alone is fine — it is
-idempotent.
+**These are modes of one workflow, not separate tools.** `plan` → `build N`
+(repeat) → `appendix` → `build` is the arc; the others exist because those steps
+get interrupted or need redoing.
 
-**Three of them are gates, not work:** `plan`, `write` and `appendix` stop and
+**Three of them are gates, not work:** `plan`, `build N`, and `appendix` stop and
 ask rather than continuing on an assumption. `plan` stops because lesson order is
-a judgement call the user owns. `write` stops at the batch boundary because
+a judgement call the user owns. `build N` stops at the batch boundary because
 quality decays on a long run and nothing detects it. `appendix` stops because its
 scope is a judgement call, and it reads better after the lessons than before.
 
@@ -325,10 +321,24 @@ the zero-padded number**. `why` is worth writing for any configuration file,
 abstraction, or special-purpose module: "what is this" is obvious from the code,
 "why is this here" is not.
 
-### 3. Author in batches
+### 3. Author and build
 
-See **Plan first, then batch** above. One fragment per lesson, `content/07.html`,
-inserted verbatim into the shell.
+`/clone-site build 10` authors ten lessons, writes them to disk, renders, and
+validates. One command because the two halves are not separable in practice: a
+lesson that has been written but not rendered cannot be validated, and the
+validator is what tells you the fragment is broken.
+
+One fragment per lesson, `content/07.html`, inserted verbatim into the shell.
+
+```bash
+/clone-site build 10     # author 10, write, render, validate, then ask
+/clone-site build 25     # a bigger batch once the page shape has settled
+/clone-site next         # same size as the last batch
+```
+
+**No argument means render only** — see [step 4](#4-build-and-validate). That is
+the idempotent half, and it is why `build` alone is still safe to run after a
+`split` or a `renumber`.
 
 `check_site.py` validates `_build/content/*.html` *before* the built pages and
 reports `file:line`. A fragment is inserted verbatim into the shell, so an
@@ -336,7 +346,9 @@ unbalanced fragment is guaranteed to cascade into the rendered page — checking
 first turns one clear message into a page you can fix, instead of a wall of
 lookalikes downstream.
 
-### 4. Build and validate
+### 4. Render and validate
+
+No content changes. Safe on its own at any point.
 
 ```bash
 python3 build.py && python3 index.py

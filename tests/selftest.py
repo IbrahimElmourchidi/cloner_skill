@@ -421,11 +421,18 @@ def main():
         check('SKILL.md declares an argument-hint', cmds is not None)
         declared = [c.strip() for c in cmds.group(1).split('|')] if cmds else []
         table = re.findall(r'^\| `([a-z]+)`(?:\s*\|[^|]*)?\s*\|', skill_md, re.M)
+        # A dispatch bullet may carry a qualifier after the command name —
+        # `build` with a number, `build` with no argument — so the pattern has to
+        # allow text between the closing backtick and the bold marker. Without
+        # it, a qualified bullet reads as "no dispatch section", which looks like
+        # a routing bug rather than a regex that is too strict.
         check('every advertised command has a dispatch section',
-              all(re.search(r'\*\*`%s`\*\*\s*—' % re.escape(c), skill_md)
+              all(re.search(r'^- \*\*`%s`[^*]*\*\*\s*—' % re.escape(c),
+                            skill_md, re.M)
                   for c in declared),
               'missing dispatch for: %r' % [c for c in declared
-                  if not re.search(r'\*\*`%s`\*\*\s*—' % re.escape(c), skill_md)])
+                  if not re.search(r'^- \*\*`%s`[^*]*\*\*\s*—'
+                                   % re.escape(c), skill_md, re.M)])
         # Equality, not containment. `<=` would pass if a row were deleted
         # from the table, which is exactly the mutation worth catching: a
         # command still routed by `argument-hint` but no longer documented is
@@ -439,12 +446,38 @@ def main():
         # believes they were consulted, and they were not. Each gate has to name
         # both the moment it stops and why that moment is the user's call.
         dispatch = re.search(r'## Mode dispatch(.*?)\n## ', skill_md, re.S)
-        for gate in ('plan', 'write', 'appendix'):
-            line = re.search(r'^- \*\*`%s`\*\*\s*—(.*?)(?=\n- \*\*|\Z)' % gate,
-                             dispatch.group(1) if dispatch else '', re.S | re.M)
-            check('gate `%s` says it stops' % gate,
+
+        # Every advertised command needs exactly one dispatch bullet. `build`
+        # legitimately had two during development, which is how a duplicated
+        # bullet shipped unnoticed — one of them contradicting the other.
+        bullets = re.findall(r'^- \*\*`([a-z]+)`(?: [a-z ]+)?\*\*', skill_md, re.M)
+        dupes = sorted({c for c in bullets if bullets.count(c) > 1})
+        check('no command has two dispatch bullets', not dupes,
+              'duplicated dispatch for: %r — one of them is contradicting the '
+              'other' % dupes)
+        # `build` gates on its *argument*: only `build N` authors and therefore
+        # only it stops. A check for the bare command would be wrong, and a
+        # check that ignored the argument would miss the real gate.
+        # The pattern covers the plain bullet (`plan`) and the qualified one
+            # (`build` with a number), because `build` has two bullets and only
+            # the authoring one is a gate. `(?:`backtick qualifier)?` is what
+            # lets one loop cover both shapes.
+            # The pattern covers a plain bullet (`plan`) and a qualified one
+        # (`build` with a number), because `build` has two bullets and only the
+        # authoring one is a gate.
+        for gate, label in (('plan', 'plan'), ('build', 'build N'),
+                            ('appendix', 'appendix')):
+            line = re.search(
+                r'^- \*\*`%s`(?: with a number)?\*\*\s*\u2014(.*?)(?=\n- \*\*|\Z)'
+                % re.escape(gate),
+                dispatch.group(1) if dispatch else '', re.S | re.M)
+            # `build` must match the *authoring* bullet, not the render-only one.
+            if gate == 'build' and line is not None and 'no argument' in line.group(0):
+                line = None
+            check('gate `%s` says it stops' % label,
                   line is not None and 'stop' in line.group(1).lower(),
-                  'the %s dispatch line must state that it stops' % gate)
+                  'the `%s` dispatch line must state that it stops' % label)
+
         gates_note = re.search(r'\*\*Three of them are gates.*?before\.', skill_md, re.S)
         check('SKILL.md names the three gates and why each one exists',
               gates_note is not None
