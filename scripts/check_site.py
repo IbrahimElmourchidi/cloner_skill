@@ -20,8 +20,16 @@ Two things here exist because of how this validator used to behave:
    same-shaped page plus a dozen lookalikes downstream.
 
 Checks: tag balance, duplicate ids, link targets, in-page anchors, prev/next
-agrees with the reading order, data-lang is known, no emoji, and every table row
-has the cell count its header declares.
+agrees with the reading order, data-lang is known, no emoji, every table row
+has the cell count its header declares, a code block is not truncated without
+saying so, a code block is not an empty container holding only its own path
+header, and no fragment is empty at all.
+
+The last three share one property: each is a page that looks built and validates
+clean. An empty fragment renders a sidebar, a heading and no body. A code block
+cut mid-class reads as the whole file. A block whose body was never filled shows
+an empty box where the lesson promised the file. None of them is a malformed
+tag, which is why tag balance found none of them.
 
 That last check exists because tag balance cannot see the fault. A row written
 as `<tr><td><td>x</td></td><td>y</td></tr>` is perfectly balanced — two opens,
@@ -114,6 +122,10 @@ def _brace_delta(text):
 ELISION = re.compile(r'(?m)^\s*(///|//|\*|/\*)?\s*(\.\.\.|…|omitted|rest of|'
                      r'and more)\s*(\*/)?\s*$')
 
+# A first line that names a source file: "// lib/x.dart", "# x.sql", "x.arb".
+PATH_HEADER = re.compile(
+    r'^\s*(?://|#)?\s*([\w./-]+\.(?:dart|arb|ya?ml|sql|json|md))\b')
+
 
 def _has_elision(text):
     """True when the block marks its own gap.
@@ -146,6 +158,7 @@ class P(HTMLParser):
         self.pre_line = 0
         self.pre_tag = None
         self.pre_text = ''      # the block's own source, for marker detection
+        self.pre_lang = None    # its data-lang, so `text`/`bash` blocks can opt out
         # Rows still occupied by a rowspan from above, as a per-column countdown.
         # Without this every row a rowspan spans looks one cell short.
         self.pending = []
@@ -171,6 +184,7 @@ class P(HTMLParser):
                 self.pre_tag = tag
                 self.pre_line = self.getpos()[0]
                 self.pre_depth = 0
+                self.pre_lang = d.get('data-lang') if tag == 'pre' else None
         self._table_shape(tag, d)
         if tag not in VOID:
             self.stack.append((tag, self.getpos()[0]))
@@ -211,6 +225,38 @@ class P(HTMLParser):
     # This is reported rather than fixed. Where an excerpt should end is an
     # authoring judgement: sometimes the honest fix is the elision marker,
     # sometimes it is the rest of the class, and only the author knows which.
+
+    # ---- stub code blocks --------------------------------------------------
+    #
+    # A block whose entire body is its own path comment. Authoring a "The
+    # file" section is two steps — emit the path comment, then fill the body
+    # with the code — and the second is easy to miss. When it is, every other
+    # check still passes: the nesting is correct, the language is known, and
+    # the page shows an empty container where it promised the file. Fifty-five
+    # of these shipped together in one site, which is what made it a pattern
+    # rather than a one-off slip.
+    def _check_stub(self, text):
+        if self.pre_lang in ('text', 'bash'):
+            # Commentary inside a terminal transcript, or a cross-reference
+            # caption naming another file. Neither is a file listing.
+            return
+        lines = [l for l in text.split('\n') if l.strip()]
+        if len(lines) != 1:
+            return
+        head = lines[0].strip()
+        if not PATH_HEADER.match(head):
+            return
+        self.errors.append(
+            '%s:%d: <pre class="code"> holds only its path header (%s) — fill it '
+            'with the file, or delete the block'
+            % (self.where, self.pre_line, head))
+
+    # ---- partial code blocks ----------------------------------------------
+    #
+    # A block that leaves a brace open has either been cut off or is a
+    # deliberate fragment, and the reader cannot tell which — so the block has
+    # to say. One `// ...` line is the whole cost of that, and it is the only
+    # thing standing between "this is the class" and "here is part of it".
     def _close_pre(self, text=''):
         if self.pre_depth > 0 and not _has_elision(text):
             self.errors.append(
@@ -219,8 +265,10 @@ class P(HTMLParser):
                 'file. Add a `// ...` line, or show the rest of the declaration.'
                 % (self.where, self.pre_line, self.pre_depth,
                    '' if self.pre_depth == 1 else 's'))
+        self._check_stub(text)
         self.pre_tag = None
         self.pre_depth = 0
+        self.pre_lang = None
         self.pre_text = ''
 
     # ---- table shape -------------------------------------------------------
@@ -350,12 +398,19 @@ def check_fragments(bad):
         bad.append('cannot import pages.py (%s) — cross-check skipped' % exc)
 
     for f in sorted(on_disk):
-        p = parse_file(os.path.join(CONTENT, f), 'content/' + f, bad)
         src = open(os.path.join(CONTENT, f), encoding='utf-8').read()
+        # An empty fragment is the common case behind the <h2> check below, and
+        # the only one where the filename gives no clue what went wrong, so it
+        # gets its own message. A file truncated by an interrupted write used to
+        # sail through every other check and render a page with a sidebar, a
+        # heading and no body at all.
+        if not src.strip():
+            bad.append('content/%s: is EMPTY (0 bytes or whitespace) — the page '
+                       'would build with no body; re-author it' % f)
+            continue
+        p = parse_file(os.path.join(CONTENT, f), 'content/' + f, bad)
         if not re.search(r'<h2', src):
             bad.append('content/%s: starts without an <h2>' % f)
-        # An empty fragment is the common case behind that check and the only
-        # one where the filename gives no clue what went wrong.
     return sorted(on_disk)
 
 

@@ -74,6 +74,10 @@ struct Collect {
     tables: Vec<TableShape>,
     /// The open `<pre class="code">` block, if any.
     pre: Option<PreBlock>,
+    /// `data-lang` seen on the tag currently being read, so the open `<pre>`
+    /// can remember it. Attributes are read before the tag opens a block, so
+    /// this is set in time; it is cleared on every tag.
+    pending_lang: Option<String>,
     /// The original source, searched to find where each text run came from.
     src: String,
     /// How far through `src` we have walked.
@@ -88,6 +92,7 @@ struct PreBlock {
     depth: i64,
     line: u64,
     text: String,
+    lang: Option<String>,
 }
 
 /// Net `{` minus `}` in a run of source, ignoring strings and comments.
@@ -166,6 +171,34 @@ fn has_elision(text: &str) -> bool {
     })
 }
 
+/// True when a first line names a source file: `// lib/x.dart`, `# x.sql`,
+/// `x.arb`. Returns the line, so the finding can name what it found.
+fn path_header(line: &str) -> Option<&str> {
+    let s = line.trim();
+    let s = s
+        .strip_prefix("//")
+        .or_else(|| s.strip_prefix('#'))
+        .unwrap_or(s)
+        .trim_start();
+    // Only an extension is enough: `dart`, `arb`, `yaml`, `yml`, `sql`,
+    // `json`, `md` are the ones a fragment carries.
+    let ext = s.rsplit_once('.')?.1;
+    let known = matches!(
+        ext,
+        "dart" | "arb" | "yaml" | "yml" | "sql" | "json" | "md"
+    );
+    if !known {
+        return None;
+    }
+    // The stem must not be empty, and must not contain whitespace — a sentence
+    // that happens to end in ".md" is prose, not a header.
+    let stem = &s[..s.len() - ext.len() - 1];
+    if stem.is_empty() || stem.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(s)
+}
+
 impl TokenSink for Collect {
     type Handle = ();
 
@@ -220,6 +253,7 @@ impl Collect {
                     self.f.links.push(val);
                 }
             } else if name == "pre" && key == "data-lang" {
+                self.pending_lang = Some(val.clone());
                 self.f.langs.push(val.clone());
                 if !KNOWN_LANG.contains(&val.as_str()) {
                     self.f.errors.push(format!(
@@ -241,8 +275,17 @@ impl Collect {
             self.close_pre();
         }
         if is_start && (name == "pre" || name == "code") && self.pre.is_none() {
-            self.pre = Some(PreBlock { depth: 0, line, text: String::new() });
+            self.pre = Some(PreBlock {
+                depth: 0,
+                line,
+                text: String::new(),
+                lang: self.pending_lang.take(),
+            });
         }
+        // Cleared unconditionally: a nested or malformed `<pre>` that never
+        // reaches the line above must not leave its language behind for the
+        // next block to inherit.
+        self.pending_lang = None;
         self.table_shape(&name, tag, is_start, line);
         if is_start {
             // `<div/>` is a start and an end in one token. Treating it as a bare
@@ -290,6 +333,36 @@ impl Collect {
                 if p.depth == 1 { "" } else { "s" },
             ));
         }
+        self.check_stub(&p);
+    }
+
+    // ---- stub code blocks --------------------------------------------------
+    //
+    // A block whose entire body is its own path comment. Authoring a "The
+    // file" section is two steps — emit the path comment, then fill the body
+    // with the code — and the second is easy to miss. When it is, every other
+    // check still passes: the nesting is correct, the language is known, and
+    // the page shows an empty container where it promised the file.
+    fn check_stub(&mut self, p: &PreBlock) {
+        // `text` and `bash` blocks are commentary inside a terminal
+        // transcript, or a cross-reference caption naming another file.
+        if matches!(p.lang.as_deref(), Some("text") | Some("bash")) {
+            return;
+        }
+        let mut lines = p.text.lines().filter(|l| !l.trim().is_empty());
+        let (Some(head), None) = (lines.next(), lines.next()) else {
+            return;
+        };
+        if path_header(head).is_none() {
+            return;
+        }
+        self.f.errors.push(format!(
+            "{}:{}: <pre class=\"code\"> holds only its path header ({}) — fill it \
+             with the file, or delete the block",
+            self.where_,
+            p.line,
+            head.trim(),
+        ));
     }
 
     // ---- table shape -------------------------------------------------------
@@ -491,6 +564,7 @@ pub fn parse_str(text: &str, where_: &str) -> Findings {
         f: Findings::default(),
         tables: Vec::new(),
         pre: None,
+        pending_lang: None,
         src: text.to_string(),
         cursor: 0,
         newlines: text.match_indices('\n').map(|(i, _)| i).collect(),

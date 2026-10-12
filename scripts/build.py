@@ -201,6 +201,24 @@ def prune(written):
         print('pruned %d stale page(s): %s' % (len(removed), ', '.join(sorted(removed))))
 
 
+def read_fragment(src):
+    """Read a content fragment, refusing to build an empty one.
+
+    A 0-byte fragment used to render a page with the sidebar, the heading and
+    no body at all: `os.path.exists` was the only test, so a file truncated by
+    an interrupted write or a failed edit passed straight through and the site
+    looked built. Nothing downstream reported it. Failing the build here is the
+    only point where the mistake is still cheap to fix.
+    """
+    body = open(src, encoding='utf-8').read()
+    if not body.strip():
+        sys.exit('empty content fragment: %s\n'
+                 '  The file exists but holds nothing, so the page would build '
+                 'with no body.\n'
+                 '  Re-author it from the source file this lesson writes.' % src)
+    return body
+
+
 def build():
     brand = html.escape(CFG['name'])
     readkey = ''
@@ -212,6 +230,7 @@ def build():
         src = os.path.join(CONTENT, '%02d.html' % p['n'])
         if not os.path.exists(src):
             sys.exit('missing content fragment: ' + src)
+        read_fragment(src)
         page = SHELL.format(
             doctitle='%s \u00b7 Step %d \u00b7 %s' % (brand, p['n'], p['nav']),
             pill='<span class="step-pill">Step %d of %d</span>' % (p['n'], TOTAL_STEPS),
@@ -231,6 +250,7 @@ def build():
         src = os.path.join(CONTENT, '%s.html' % a['slug'])
         if not os.path.exists(src):
             sys.exit('missing appendix fragment: ' + src)
+        read_fragment(src)
         page = SHELL.format(
             doctitle='%s \u00b7 Appendix \u00b7 %s' % (brand, a['nav']),
             pill='<span class="step-pill">Appendix \u00b7 not in the lesson order</span>',
@@ -241,7 +261,7 @@ def build():
             brand=brand, tagline=html.escape(CFG.get('tagline', '')),
             eyebrow=html.escape(CFG.get('eyebrow', '')),
             what_label=html.escape(CFG.get('what_label', 'The step')),
-            steptop='', content=open(src, encoding='utf-8').read(),
+            steptop='', content=read_fragment(src),
             navbottom=navbottom_appendix(i), footer=footer_html())
         with open(os.path.join(SITE, '%s.html' % a['slug']), 'w', encoding='utf-8') as f:
             f.write(page)

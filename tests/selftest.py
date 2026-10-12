@@ -858,6 +858,86 @@ def main():
             check('engines agree on partial-block reporting', not pbad,
                   'first disagreement: %r' % (pbad[0] if pbad else None,))
 
+            # Stub code blocks: a container whose whole body is its own path
+            # comment. Every other check passes on one — the nesting is right,
+            # the language is known — so this is the only thing standing between
+            # the reader and an empty box where the file was promised.
+            def stub_hits(src):
+                r = subprocess.run([binary, '__check-diff'],
+                                   input=src.encode('utf-8'), capture_output=True)
+                lines = r.stdout.decode().splitlines()
+                return [l for l in lines if 'path header' in l], lines
+
+            sbad = []
+            for label, src, want in [
+                ('a block holding only a dart path header',
+                 blk('// lib/core/routing/app_router.dart'),
+                 'path header'),
+                ('a block holding only a bare sql filename',
+                 blk('supabase/sql/consent_records.sql'),
+                 'path header'),
+                ('no false positive: a filled block',
+                 blk('// lib/core/routing/app_router.dart\nclass AppRouter {}\n'),
+                 None),
+                ('no false positive: a bash cross-reference',
+                 blk('lib/core/widgets/scaffold.dart — 101 lines', 'bash'),
+                 None),
+                ('no false positive: a text transcript note',
+                 blk('# only promotion_remote_datasource.dart? check', 'text'),
+                 None),
+                ('no false positive: a one-line code block',
+                 blk('return const SizedBox.shrink();'),
+                 None),
+            ]:
+                hits, lines = stub_hits(src)
+                if want is None:
+                    check('no false positive: %s' % label, not hits,
+                          'unexpectedly flagged: %r' % hits)
+                else:
+                    check('reports %s' % label,
+                          len(hits) == 1 and want in hits[0],
+                          'want one %r finding, got %r' % (want, hits))
+                g = _norm([l for l in lines if l])
+                e = _norm(_ref_findings(src))
+                if g != e:
+                    sbad.append((label, e, g))
+            check('engines agree on stub-block reporting', not sbad,
+                  'first disagreement: %r' % ((sbad[0] if sbad else None),))
+
+            # ---- an empty fragment ------------------------------------------
+            #
+            # This one cannot be reached through the parser: a 0-byte file has
+            # no markup, so every parser check passes on it. It used to build a
+            # page with a sidebar, a heading and no body.
+            import tempfile as _tf
+            with _tf.TemporaryDirectory() as td:
+                cdir = os.path.join(td, 'content')
+                os.makedirs(cdir)
+                good = ('<h2>a</h2>\n<pre class="code" data-lang="dart">'
+                        '<code>// x.dart\nclass A {}\n</code></pre>\n')
+                for name, body, want in [('01.html', good, False),
+                                         ('02.html', '', True),
+                                         ('03.html', '   \n\n\t\n', True)]:
+                    with open(os.path.join(cdir, name), 'w',
+                              encoding='utf-8') as fh:
+                        fh.write(body)
+                bad = []
+                _save = (ref.CONTENT, ref.SITE)
+                ref.CONTENT, ref.SITE = cdir, td
+                try:
+                    ref.check_fragments(bad)
+                finally:
+                    ref.CONTENT, ref.SITE = _save
+                empties = [b for b in bad if 'is EMPTY' in b]
+                check('reports an empty fragment', len(empties) == 2,
+                      'want 2, got %r' % (empties,))
+                check('an empty fragment is not also reported as missing an <h2>',
+                      not [b for b in bad if 'starts without' in b],
+                      'got %r' % ([b for b in bad if 'starts without' in b],))
+                check('a filled fragment raises nothing',
+                      not [b for b in bad if '01.html' in b],
+                      'got %r' % ([b for b in bad if '01.html' in b],))
+
             # Emoji line numbers are a deliberate divergence: the reference
             # reports the line the data run *began*, this reports the line the
             # emoji is on. Both are checked explicitly rather than diffed,
