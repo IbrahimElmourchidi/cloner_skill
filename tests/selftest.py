@@ -687,6 +687,31 @@ def main():
                 '<a href="#a">x</a><p id="a">y</p>',
                 '<ul><li>a<li>b</ul>',
                 '<DIV CLASS=X>upper</DIV>',
+                # Table shape. A nested cell is balanced markup, so the
+                # tag-balance check above cannot see it — that is the whole
+                # reason the cell-count check exists.
+                '<table><tr><th>A</th><th>B</th></tr><tr><td><td>1</td></td>'
+                '<td>x</td></tr></table>',
+                '<table><tr><th>A</th><th>B</th><th>C</th></tr><tr><td>1</td>'
+                '<td>x</td></tr></table>',
+                '<table><tr><th>A</th></tr><tr><td>1</td><td>x</td></tr></table>',
+                '<table><tr><th>A</th><th>B</th><th>C</th></tr><tr>'
+                '<td colspan="2">wide</td><td>x</td></tr></table>',
+                '<table><tr><th>A</th><th>B</th><th>C</th></tr><tr>'
+                '<td>1</td><td rowspan="3">s</td><td>x</td></tr>'
+                '<tr><td>2</td><td>y</td></tr><tr><td>3</td><td>z</td></tr>'
+                '</table>',
+                '<table><tr><td>o</td><td><table><tr><td>i</td></tr></table>'
+                '</td></tr></table>',
+                # A block that stops mid-declaration. Brace depth is the signal:
+                # the page cannot be checked against a source file, so the fault
+                # has to be visible in the markup itself.
+                '<h2>a</h2>\n<pre class="code" data-lang="dart"><code>'
+                'class A {\n  const A({\n    this.x,\n  });\n</code></pre>',
+                '<h2>a</h2>\n<pre class="code" data-lang="dart"><code>'
+                'class A {\n  // ...\n  void f() {}\n</code></pre>',
+                '<h2>a</h2>\n<pre class="code" data-lang="dart"><code>'
+                'final s = "{";\nfinal t = 1;\n</code></pre>',
             ]
             payload = ''.join(c + '\n' for c in cases).encode('utf-8')
             r = subprocess.run([binary, '__check-diff'], input=payload,
@@ -694,6 +719,144 @@ def main():
             check('parser produces findings for the malformed cases',
                   b'unknown data-lang' in r.stdout and b'never closed' in r.stdout,
                   'the harness produced nothing: %r' % r.stdout[:200])
+
+            # Table shape specifically. Asserted rather than only diffed, because
+            # the differential below compares two implementations that were
+            # edited at the same time: if both had the check missing, they would
+            # agree perfectly and the check would look fine. These pin the
+            # behaviour itself.
+            for label, src, want in [
+                ('nested cell',
+                 '<h2>a</h2>\n<table><tr><th>A</th><th>B</th></tr>'
+                 '<tr><td><td>1</td></td><td>x</td></tr></table>',
+                 'nested in another'),
+                ('short row',
+                 '<h2>a</h2>\n<table><tr><th>A</th><th>B</th><th>C</th></tr>'
+                 '<tr><td>1</td><td>x</td></tr></table>',
+                 'first row of its table declares 3'),
+                ('long row',
+                 '<h2>a</h2>\n<table><tr><th>A</th></tr>'
+                 '<tr><td>1</td><td>x</td></tr></table>',
+                 'first row of its table declares 1'),
+                ('colspan is legitimate',
+                 '<h2>a</h2>\n<table><tr><th>A</th><th>B</th><th>C</th></tr>'
+                 '<tr><td colspan="2">w</td><td>x</td></tr></table>',
+                 'first row of its table declares'),
+            ]:
+                r = subprocess.run([binary, '__check-diff'],
+                                   input=src.encode('utf-8'), capture_output=True)
+                found = want.encode('utf-8') in r.stdout
+                if label == 'colspan is legitimate':
+                    # Not a substring test: a clean document produces findings
+                    # only if something is wrong, so this must find none.
+                    findings = [l for l in r.stdout.decode().splitlines()
+                                if 'table' in l and 'declares' in l]
+                    check('%s raises nothing' % label, not findings,
+                          'unexpectedly reported: %r' % findings)
+                else:
+                    check('parser reports a %s' % label, found,
+                          'want %r in %r' % (want, r.stdout.decode()[:160]))
+
+            for label, src in [
+                ('rowspan spanning three rows',
+                 '<h2>a</h2>\n<table><tr><th>A</th><th>B</th><th>C</th></tr>'
+                 '<tr><td>1</td><td rowspan="3">s</td><td>x</td></tr>'
+                 '<tr><td>2</td><td>y</td></tr><tr><td>3</td><td>z</td></tr>'
+                 '</table>'),
+                ('rowspan in the final column',
+                 '<h2>a</h2>\n<table><tr><th>A</th><th>B</th></tr>'
+                 '<tr><td rowspan="2">s</td><td>x</td></tr>'
+                 '<tr><td>y</td></tr></table>'),
+            ]:
+                r = subprocess.run([binary, '__check-diff'],
+                                   input=src.encode('utf-8'), capture_output=True)
+                bad_rows = [l for l in r.stdout.decode().splitlines()
+                            if 'first row of its table declares' in l]
+                check('%s raises nothing' % label, not bad_rows,
+                      'a rowspan must not make later rows look short: %r'
+                      % bad_rows)
+
+            # And the reference must agree, case for case.
+            table_cases = [
+                '<h2>a</h2>\n<table><tr><th>A</th><th>B</th></tr>'
+                '<tr><td><td>1</td></td><td>x</td></tr></table>',
+                '<h2>a</h2>\n<table><tr><th>A</th><th>B</th><th>C</th></tr>'
+                '<tr><td>1</td><td>x</td></tr></table>',
+                '<h2>a</h2>\n<table><tr><th>A</th><th>B</th><th>C</th></tr>'
+                '<tr><td>1</td><td rowspan="3">s</td><td>x</td></tr>'
+                '<tr><td>2</td><td>y</td></tr><tr><td>3</td><td>z</td></tr>'
+                '</table>',
+            ]
+            tbad = []
+            for c in table_cases:
+                r = subprocess.run([binary, '__check-diff'],
+                                   input=c.encode('utf-8'), capture_output=True)
+                g = _norm([l for l in r.stdout.decode().splitlines() if l])
+                e = _norm(_ref_findings(c))
+                if g != e:
+                    tbad.append((e, g))
+            check('engines agree on table shape', not tbad,
+                  'first disagreement: %r' % ((tbad[0] if tbad else None),))
+
+            # Partial code blocks. The whole point is that a reader cannot tell
+            # a fragment from a whole file, so both engines must refuse to let
+            # one pass unmarked.
+            def blk(code, lang='dart'):
+                return ('<h2>a</h2>\n<pre class="code" data-lang="%s"><code>'
+                        '%s</code></pre>' % (lang, code))
+
+            for label, src, want in [
+                ('a block cut off mid-class',
+                 blk('class A {\n  const A({\n    this.x,\n  });\n'),
+                 'unclosed brace'),
+                ('a fragment marked with // ...',
+                 blk('class A {\n  // ...\n  void f() {}\n'),
+                 None),
+                ('a fragment marked with /// ...',
+                 blk('class A {\n  /// ...\n  void f() {}\n'),
+                 None),
+                ('a brace inside a string literal',
+                 blk('final s = "{";\nfinal t = 1;\n'),
+                 None),
+                ('a brace inside a line comment',
+                 blk('// opens {\nfinal t = 1;\n'),
+                 None),
+                ('a complete class',
+                 blk('class A {\n  const A();\n}\n'),
+                 None),
+                ('a shell block with an if',
+                 blk('if [ -f x ]; then\n  echo hi\nfi\n', 'bash'),
+                 None),
+            ]:
+                r = subprocess.run([binary, '__check-diff'],
+                                   input=src.encode('utf-8'), capture_output=True)
+                out = r.stdout.decode()
+                hits = [l for l in out.splitlines() if 'unclosed brace' in l]
+                if want is None:
+                    check('no false positive: %s' % label, not hits,
+                          'unexpectedly flagged: %r' % hits)
+                else:
+                    check('reports %s' % label,
+                          len(hits) == 1 and want in hits[0],
+                          'want one %r finding, got %r' % (want, hits))
+
+            # Both engines must agree, including on the false positives.
+            pbad = []
+            for code in ('class A {\n  const A();\n',
+                         'class A {\n  // ...\n  void f() {}\n',
+                         'final s = "{";\nfinal t = 1;\n',
+                         '/* opens {\nstill */\nfinal t = 1;\n',
+                         "final s = '{';\nfinal t = 1;\n",
+                         'class A {\n  void f() {\n    if (x) {\n    }\n  }\n'):
+                c = blk(code)
+                r = subprocess.run([binary, '__check-diff'],
+                                   input=c.encode('utf-8'), capture_output=True)
+                g = _norm([l for l in r.stdout.decode().splitlines() if l])
+                e = _norm(_ref_findings(c))
+                if g != e:
+                    pbad.append((e, g))
+            check('engines agree on partial-block reporting', not pbad,
+                  'first disagreement: %r' % (pbad[0] if pbad else None,))
 
             # Emoji line numbers are a deliberate divergence: the reference
             # reports the line the data run *began*, this reports the line the
@@ -720,7 +883,7 @@ def main():
                 if got != exp:
                     disagree.append((c, exp, got))
             check('parser findings match the reference on %d cases' % len(cases),
-                  not disagree, 'first disagreement: %r' % (disagree[0] if disagree else None))
+                  not disagree, 'first disagreement: %r' % ((disagree[0] if disagree else None),))
 
         # ---- the generator holds no project names ----
         gen = ' '.join(open(os.path.join(SCRIPTS, f), encoding='utf-8').read()

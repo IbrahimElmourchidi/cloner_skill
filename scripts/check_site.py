@@ -20,7 +20,16 @@ Two things here exist because of how this validator used to behave:
    same-shaped page plus a dozen lookalikes downstream.
 
 Checks: tag balance, duplicate ids, link targets, in-page anchors, prev/next
-agrees with the reading order, data-lang is known, no emoji.
+agrees with the reading order, data-lang is known, no emoji, and every table row
+has the cell count its header declares.
+
+That last check exists because tag balance cannot see the fault. A row written
+as `<tr><td><td>x</td></td><td>y</td></tr>` is perfectly balanced — two opens,
+two closes — so a stack-based checker has nothing to report. A browser disagrees:
+it closes the first cell where it meets the second, the row renders one column
+wider than the header, and every cell to the right of the fault shifts along with
+it. The page reads as a styling bug and the markup reads as correct. Counting
+cells per row against the header is the only thing that catches it.
 """
 import os
 import re
@@ -61,8 +70,62 @@ KNOWN_LANG = {
 EMOJI = re.compile('[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F000-\U0001F02F]')
 
 
+def _span(attrs):
+    """Column span of a cell. Absent or unparseable means one, as in a browser."""
+    v = attrs.get('colspan')
+    if v is None:
+        return 1
+    try:
+        n = int(str(v).strip())
+    except ValueError:
+        return 1
+    return n if n > 0 else 1
+
+
+def _rowspan(attrs):
+    """Row span of a cell. Absent or unparseable means one, as in a browser."""
+    v = attrs.get('rowspan')
+    if v is None:
+        return 1
+    try:
+        n = int(str(v).strip())
+    except ValueError:
+        return 1
+    return n if n > 0 else 1
+
+
+def _brace_delta(text):
+    """Net `{` minus `}` in a run of source, ignoring strings and comments.
+
+    Deliberately crude. Dart's string interpolation (`` '${a}' ``) puts braces
+    back in after the string is stripped, which can make a balanced block look
+    unbalanced — so the strings are stripped first and interpolation braces are
+    accepted as lost. That errs towards reporting a block that is fine, which
+    costs an author one `// ...` line, rather than missing a block that stops
+    mid-class, which costs a reader a wrong conclusion.
+    """
+    t = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    t = re.sub(r'//[^\n]*', '', t)
+    t = re.sub(r"'(?:\\.|[^'\\\n])*'", "''", t)
+    t = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', t)
+    return t.count('{') - t.count('}')
+
+
+ELISION = re.compile(r'(?m)^\s*(///|//|\*|/\*)?\s*(\.\.\.|…|omitted|rest of|'
+                     r'and more)\s*(\*/)?\s*$')
+
+
+def _has_elision(text):
+    """True when the block marks its own gap.
+
+    A line that is nothing but an ellipsis, in any of the comment spellings an
+    author reaches for. This is what makes a fragment honest, so it is the one
+    thing the check is willing to accept.
+    """
+    return bool(ELISION.search(text))
+
+
 class P(HTMLParser):
-    """Collects ids, links, langs and tag-balance errors for one document."""
 
     def __init__(self, where):
         super().__init__(convert_charrefs=True)
@@ -71,6 +134,21 @@ class P(HTMLParser):
         self.ids, self.links, self.anchors, self.langs = [], [], [], []
         self.svg_open = 0
         self.errors = []
+        # Table shape, tracked from the events rather than by re-parsing the
+        # source. A nested cell has to be detected here: by the time the markup
+        # is a string again the two <td> are indistinguishable from a row that
+        # genuinely has one cell whose content starts with a cell.
+        self.tables = []      # one entry per open <table>
+        self.row = None       # cells seen in the row currently being read
+        # Open `<pre class="code">` blocks, as (start line, is_pre/code).
+        # Tracked so brace depth can be judged per block rather than per file.
+        self.pre_depth = 0
+        self.pre_line = 0
+        self.pre_tag = None
+        self.pre_text = ''      # the block's own source, for marker detection
+        # Rows still occupied by a rowspan from above, as a per-column countdown.
+        # Without this every row a rowspan spans looks one cell short.
+        self.pending = []
 
     def _err(self, msg):
         self.errors.append('%s:%d: %s' % (self.where, self.getpos()[0], msg))
@@ -85,14 +163,26 @@ class P(HTMLParser):
             self.langs.append(d['data-lang'])
         if tag == 'svg':
             self.svg_open += 1
+        if tag in ('pre', 'code'):
+            # A <pre> without <code> holds source too, but the shell always
+            # writes the pair; tracking either keeps a bare <pre> from silently
+            # escaping the brace check.
+            if self.pre_tag is None:
+                self.pre_tag = tag
+                self.pre_line = self.getpos()[0]
+                self.pre_depth = 0
+        self._table_shape(tag, d)
         if tag not in VOID:
             self.stack.append((tag, self.getpos()[0]))
 
     def handle_endtag(self, tag):
         if tag == 'svg':
             self.svg_open -= 1
+        self._end_table_shape(tag)
         if tag in VOID:
             return
+        if self.pre_tag == tag and tag in ('pre', 'code'):
+            self._close_pre(text=self.pre_text)
         if not self.stack:
             self._err('stray </%s>' % tag)
         elif self.stack[-1][0] != tag:
@@ -103,9 +193,105 @@ class P(HTMLParser):
             self.stack.pop()
 
     def handle_data(self, data):
+        if self.pre_tag == 'pre':
+            # Only the text between <pre> and <code> is markup-free source.
+            self.pre_depth += _brace_delta(data)
+            self.pre_text += data
         m = EMOJI.search(data)
         if m:
             self._err('emoji %r in text' % m.group(0))
+
+    # ---- partial code blocks ----------------------------------------------
+    #
+    # A block that leaves a brace open has either been cut off or is a
+    # deliberate fragment, and the reader cannot tell which — so the block has
+    # to say. One `// ...` line is the whole cost of that, and it is the only
+    # thing standing between "this is the class" and "here is part of it".
+    #
+    # This is reported rather than fixed. Where an excerpt should end is an
+    # authoring judgement: sometimes the honest fix is the elision marker,
+    # sometimes it is the rest of the class, and only the author knows which.
+    def _close_pre(self, text=''):
+        if self.pre_depth > 0 and not _has_elision(text):
+            self.errors.append(
+                '%s:%d: <pre class="code"> ends with %d unclosed brace%s and no '
+                'elision marker — a reader cannot tell a fragment from the whole '
+                'file. Add a `// ...` line, or show the rest of the declaration.'
+                % (self.where, self.pre_line, self.pre_depth,
+                   '' if self.pre_depth == 1 else 's'))
+        self.pre_tag = None
+        self.pre_depth = 0
+        self.pre_text = ''
+
+    # ---- table shape -------------------------------------------------------
+    #
+    # Two independent faults produce the same symptom, and they need different
+    # fixes, so they are reported separately rather than as one "bad row" count:
+    #
+    #   nested  <tr><td><td>x</td></tr>  — a cell inside a cell. Delete the
+    #          inner <td>. The outer one was never meant to be there.
+    #   arity   <tr><td>x</td></tr>       — a genuine cell count mismatch. The
+    #          author has to decide what belongs in the missing cell, so this
+    #          one is never auto-fixable and never should be.
+
+    def _table_shape(self, tag, d):
+        if tag == 'table':
+            self.tables.append({'cols': None, 'row': None,
+                                'line': self.getpos()[0], 'pending': []})
+            return
+        if not self.tables:
+            return
+        t = self.tables[-1]
+        if tag == 'tr':
+            # A row belongs to the innermost table, which is what `tables[-1]`
+            # already is — that is why the nested-table case needs no special
+            # handling here.
+            #
+            # `pending` is what earlier rows claimed, so it belongs to this
+            # row's width. It is reset at the end of each row, which is where
+            # this row's own rowspans are carried forward to the next one.
+            t['row'] = []
+        elif tag in ('td', 'th'):
+            if t['row'] is None:          # a cell with no row: malformed anyway
+                t['row'] = []
+            # A cell inside a cell is the fault this whole check exists for.
+            # self.stack is appended *after* this runs, so the top of the stack
+            # is the enclosing tag.
+            if self.stack and self.stack[-1][0] in ('td', 'th'):
+                self._err('<%s> inside <%s> on line %d — one cell is nested in '
+                          'another; delete the inner tag'
+                          % (tag, self.stack[-1][0], self.stack[-1][1]))
+            t['row'].append(d)
+
+    def _end_table_shape(self, tag):
+        if not self.tables:
+            return
+        t = self.tables[-1]
+        if tag == 'tr' and t['row'] is not None:
+            # Columns already claimed by a rowspan from an earlier row still
+            # count towards this row's width — they are simply not written twice.
+            # One `rowspan="3"` cell claims ONE column for two further rows, so
+            # `pending` holds how many more rows each claimed column survives.
+            span = sum(_span(c) for c in t['row']) + len(t['pending'])
+            # The first row of a table defines its arity; only later rows are
+            # compared against it. Using `<th>` to find the header instead would
+            # miss a table that has no thead, which is legal and common.
+            if t['cols'] is None:
+                t['cols'] = span
+            elif span != t['cols']:
+                self._err('<tr> has %d cell%s but the first row of its table '
+                          'declares %d (table opened line %d)'
+                          % (span, '' if span == 1 else 's', t['cols'],
+                             t['line']))
+            # Age the claims already in flight, and add this row's own. The new
+            # ones start at rowspan-1 because the row that declares them has
+            # already been counted.
+            aged = [p - 1 for p in t['pending'] if p > 1]
+            fresh = [_rowspan(c) - 1 for c in t['row'] if _rowspan(c) > 1]
+            t['pending'] = fresh + aged
+            t['row'] = None
+        elif tag == 'table':
+            self.tables.pop()
 
 
 def parse_file(path, where, bad):

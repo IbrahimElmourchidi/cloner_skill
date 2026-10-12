@@ -30,15 +30,140 @@ pub struct Findings {
     pub stack: Vec<(String, u64)>,
 }
 
+/// One open `<table>`, while it is being read.
+#[derive(Default)]
+struct TableShape {
+    /// Column count, taken from the first row. `None` until that row closes.
+    cols: Option<usize>,
+    /// `(colspan, rowspan)` for each cell of the row currently being read.
+    row: Vec<(usize, u32)>,
+    /// Per-column countdown of cells still occupying a column from above, via
+    /// `rowspan`. One `rowspan="3"` claims ONE column for two further rows.
+    pending: Vec<u32>,
+    line: u64,
+}
+
+impl TableShape {
+    fn new(line: u64) -> Self {
+        TableShape { line, ..Default::default() }
+    }
+}
+
+/// Column span of a cell. Absent or unparseable means one, as in a browser.
+fn span_of(tag: &Tag, attr: &str) -> usize {
+    for a in &tag.attrs {
+        if a.name.local.as_ref().eq_ignore_ascii_case(attr) {
+            return a
+                .value
+                .to_string()
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|n| *n > 0)
+                .unwrap_or(1);
+        }
+    }
+    1
+}
+
 struct Collect {
     where_: String,
     f: Findings,
+    /// Open tables, outermost first. A row belongs to the innermost one, so a
+    /// table nested inside a cell needs no special handling.
+    tables: Vec<TableShape>,
+    /// The open `<pre class="code">` block, if any.
+    pre: Option<PreBlock>,
     /// The original source, searched to find where each text run came from.
     src: String,
     /// How far through `src` we have walked.
     cursor: usize,
     /// Byte offset of every newline, for turning an offset into a line number.
     newlines: Vec<usize>,
+}
+
+/// An open `<pre class="code">` block, accumulating brace depth as its source
+/// arrives.
+struct PreBlock {
+    depth: i64,
+    line: u64,
+    text: String,
+}
+
+/// Net `{` minus `}` in a run of source, ignoring strings and comments.
+///
+/// Deliberately crude, and deliberately so in one direction: Dart's string
+/// interpolation puts braces back after the string is stripped, so a balanced
+/// block can look unbalanced. That costs an author one `// ...` line; the
+/// opposite mistake — missing a block that stops mid-class — costs a reader a
+/// wrong conclusion. Erring towards reporting is the right way round here.
+fn brace_delta(text: &str) -> i64 {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' if chars.peek() == Some(&'/') => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = '\0';
+                for c in chars.by_ref() {
+                    if prev == '*' && c == '/' {
+                        break;
+                    }
+                    prev = c;
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                }
+            }
+            // Single- or double-quoted: drop the contents, keeping newlines so
+            // nothing downstream depends on the collapsed length.
+            q @ ('\'' | '"') => {
+                out.push(' ');
+                let mut escaped = false;
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                    if escaped {
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == q {
+                        break;
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    let opens = out.matches('{').count() as i64;
+    let closes = out.matches('}').count() as i64;
+    opens - closes
+}
+
+/// True when the block marks its own gap with a line that is only an ellipsis,
+/// in any of the comment spellings an author reaches for.
+fn has_elision(text: &str) -> bool {
+    text.lines().any(|line| {
+        let s = line.trim();
+        let s = s
+            .trim_start_matches("///")
+            .trim_start_matches("//")
+            .trim_start_matches("/*")
+            .trim_start_matches('*')
+            .trim()
+            .trim_end_matches("*/")
+            .trim();
+        matches!(s, "..." | "…" | "omitted" | "rest of" | "and more")
+    })
 }
 
 impl TokenSink for Collect {
@@ -112,6 +237,13 @@ impl Collect {
         if VOID.contains(&name.as_str()) {
             return;
         }
+        if !is_start && (name == "pre" || name == "code") && self.pre.is_some() {
+            self.close_pre();
+        }
+        if is_start && (name == "pre" || name == "code") && self.pre.is_none() {
+            self.pre = Some(PreBlock { depth: 0, line, text: String::new() });
+        }
+        self.table_shape(&name, tag, is_start, line);
         if is_start {
             // `<div/>` is a start and an end in one token. Treating it as a bare
             // start leaves an unclosed `<div>` that the author never wrote.
@@ -135,7 +267,129 @@ impl Collect {
         }
     }
 
+    // ---- partial code blocks ----------------------------------------------
+    //
+    // A block that leaves a brace open has either been cut off or is a
+    // deliberate fragment, and the reader cannot tell which — so the block has
+    // to say. One `// ...` line is the whole cost of that, and it is the only
+    // thing standing between "this is the class" and "here is part of it".
+    //
+    // Reported, never repaired. Where an excerpt should end is an authoring
+    // judgement: sometimes the honest fix is the marker, sometimes it is the
+    // rest of the class, and only the author knows which.
+    fn close_pre(&mut self) {
+        let Some(p) = self.pre.take() else { return };
+        if p.depth > 0 && !has_elision(&p.text) {
+            self.f.errors.push(format!(
+                "{}:{}: <pre class=\"code\"> ends with {} unclosed brace{} and no \
+                 elision marker — a reader cannot tell a fragment from the whole \
+                 file. Add a `// ...` line, or show the rest of the declaration.",
+                self.where_,
+                p.line,
+                p.depth,
+                if p.depth == 1 { "" } else { "s" },
+            ));
+        }
+    }
+
+    // ---- table shape -------------------------------------------------------
+    //
+    // Two independent faults produce the same symptom and need different fixes,
+    // so they are reported separately rather than as one "bad row" count:
+    //
+    //   nested  <tr><td><td>x</td></tr>  — a cell inside a cell. Delete the
+    //          inner tag; the outer one was never meant to be there. Tag
+    //          balance cannot see this: it is two opens and two closes.
+    //   arity   <tr><td>x</td></tr>       — a genuine cell-count mismatch. The
+    //          author has to decide what belongs in the missing cell, so this
+    //          is never auto-fixable and never should be.
+    fn table_shape(&mut self, name: &str, tag: &Tag, is_start: bool, line: u64) {
+        if !is_start {
+            self.end_table_shape(name, line);
+            return;
+        }
+        match name {
+            "table" => self.tables.push(TableShape::new(line)),
+            "tr" => {
+                if let Some(t) = self.tables.last_mut() {
+                    t.row.clear();
+                }
+            }
+            "td" | "th" => {
+                // The stack is appended after this runs, so its top is the
+                // enclosing element — which is what tells us the cell is nested.
+                if let Some((open, open_line)) = self.f.stack.last() {
+                    if open == "td" || open == "th" {
+                        self.f.errors.push(format!(
+                            "{}:{line}: <{name}> inside <{open}> on line {open_line} — \
+                             one cell is nested in another; delete the inner tag",
+                            self.where_
+                        ));
+                    }
+                }
+                if let Some(t) = self.tables.last_mut() {
+                    t.row.push((span_of(tag, "colspan"), span_of(tag, "rowspan") as u32));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn end_table_shape(&mut self, name: &str, line: u64) {
+        let Some(t) = self.tables.last_mut() else { return };
+        match name {
+            "tr" if !t.row.is_empty() => {
+                // Columns claimed by a rowspan from above still count towards
+                // this row's width — they are simply not written twice.
+                let span: usize = t.row.iter().map(|(cs, _)| *cs).sum::<usize>() + t.pending.len();
+                match t.cols {
+                    // The first row of a table defines its arity. Looking for the
+                    // header row by <th> instead would miss a table with no
+                    // thead, which is legal and common.
+                    None => t.cols = Some(span),
+                    Some(cols) if span != cols => {
+                        let (w, n, cols_s) = (self.where_.clone(), span, cols);
+                        self.f.errors.push(format!(
+                            "{}:{}: <tr> has {n} cell{s} but the first row of \
+                             its table declares {cols_s} (table opened line {opened})",
+                            w,
+                            line,
+                            s = if n == 1 { "" } else { "s" },
+                            opened = t.line,
+                        ));
+                    }
+                    Some(_) => {}
+                }
+                // Age the claims already in flight, then add this row's own.
+                // The new ones start at rowspan-1: the row declaring them has
+                // already been counted.
+                let aged: Vec<u32> = t.pending.iter().filter(|p| **p > 1).map(|p| p - 1).collect();
+                let fresh: Vec<u32> = t
+                    .row
+                    .iter()
+                    .map(|(_, rs)| *rs)
+                    .filter(|rs| *rs > 1)
+                    .map(|rs| rs - 1)
+                    .collect();
+                let mut next = fresh;
+                next.extend(aged);
+                t.pending = next;
+                t.row.clear();
+            }
+            "table" => {
+                self.tables.pop();
+            }
+            _ => {}
+        }
+    }
+
     fn text(&mut self, text: &str, token_start: usize) {
+        // Only the text between <pre> and <code> is markup-free source, so the
+        // brace count is taken here rather than across the whole document.
+        if let Some(p) = self.pre.as_mut() {
+            p.depth += brace_delta(text);
+            p.text.push_str(text);
+        }
         if let Some((at, c)) = text.char_indices().find(|(_, c)| is_emoji(*c)) {
             let line = self.line_at(token_start + at);
             self.f.errors.push(format!(
@@ -235,6 +489,8 @@ pub fn parse_str(text: &str, where_: &str) -> Findings {
     let mut sink = Collect {
         where_: where_.to_string(),
         f: Findings::default(),
+        tables: Vec::new(),
+        pre: None,
         src: text.to_string(),
         cursor: 0,
         newlines: text.match_indices('\n').map(|(i, _)| i).collect(),

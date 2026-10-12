@@ -83,15 +83,83 @@ which transfers.
 ### Excerpts versus whole files
 
 Early steps show complete files. Once a file grows past the point where
-reproducing it helps, show the relevant part — and **say so on the page**. A
-reader who cannot tell whether a block is the whole file will assume it is, and
-will be wrong about something that matters.
+reproducing it helps, show the relevant part — and **mark the cut**. A reader
+who cannot tell whether a block is the whole file will assume it is, and will
+be wrong about something that matters.
+
+Two ways to be honest, and the second is what the validator requires:
+
+**In the prose**, for a reader skimming:
 
 ```html
 <h2>The loader</h2>
 <p>The <code>load()</code> function below is the whole of
 <code>config.py</code> except for the two type aliases at the top.</p>
 ```
+
+**In the block**, with an elision marker on a line of its own:
+
+```
+class ConfigLoader {
+  ConfigLoader(this._root);
+
+  // ...
+}
+```
+
+Use the marker whenever the block leaves a brace open. `check_site.py` counts
+braces per `<pre class="code">` and reports any block that ends unbalanced
+without one — because an unmarked fragment is the one failure that looks
+exactly like success. A block showing a constructor and stopping reads as a
+finished class, and the page then discusses fields, getters and `props` that
+are nowhere in it.
+
+The check is deliberately crude about braces inside strings and comments: it
+strips them, so `"{"` in a Dart literal does not count. It errs towards
+reporting, because the cost of a false positive is one `// ...` line and the
+cost of a false negative is a reader's wrong conclusion.
+
+Which fix to apply is a judgement, not a rule. Sometimes the honest fix is the
+marker; sometimes it is the rest of the class, because the omitted part is the
+point of the page. The validator tells you which blocks are ambiguous. It does
+not decide what they should say.
+
+### Tables
+
+One cell per `<td>`, one `<tr>` per row, and the first row of the table fixes
+the column count for every row after it:
+
+```html
+<div class="tbl"><table>
+<thead><tr><th>Lesson</th><th>Writes</th></tr></thead>
+<tbody>
+<tr><td>22</td><td>the three entities</td></tr>
+</tbody>
+</table></div>
+```
+
+The failure to avoid is a doubled tag:
+
+```html
+<tr><td><td>22</td></td><td>the three entities</td></tr>
+```
+
+That is **balanced markup** — two opens, two closes — so a tag-balance check
+has nothing to report. A browser disagrees: it closes the first cell where it
+meets the second, so the row renders one column wider than the header and every
+cell to its right shifts along with it. The page looks like a styling problem
+and the markup looks correct, which is why this survives a build that otherwise
+passes. `check_site.py` counts cells per row against the first row of the same
+table and reports both faults separately:
+
+- *nested in another* — a `<td>` inside a `<td>`. Delete the inner tag.
+- *cell count mismatch* — a row that is genuinely short or long. This one is
+  never auto-fixable: deciding what belongs in a missing cell is an authoring
+  judgement, not a string operation.
+
+`colspan` and `rowspan` are both honoured, and both are legitimate. A row may be
+shorter than the header when a `rowspan` from a row above already occupies the
+columns it does not repeat.
 
 ## Escaping
 
