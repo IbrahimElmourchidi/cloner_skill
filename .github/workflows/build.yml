@@ -1,0 +1,190 @@
+name: build
+
+# One entry per (runner, target). Targets are cross-compiled only where that is
+# routine and reliable — Linux arm64 and macOS x64 both cross from an x64/arm64
+# runner with nothing but a linker and a universal SDK respectively. Everything
+# else builds natively.
+#
+# Deliberately NOT using macos-13 for x86_64 macOS: GitHub is retiring the Intel
+# macOS runners, and a workflow that breaks when a runner label is withdrawn is
+# a workflow that eventually silently stops producing a macOS build.
+#
+# A cross-built artifact is marked `cross: true` and is NOT smoke-tested —
+# executing it would need its own architecture. It is compile-verified only.
+# That is a weaker guarantee and it is recorded as such rather than papered over
+# with a test that cannot run.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}${{ matrix.cross && ' (cross)' || '' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Any single platform failing fails the build. A release missing macOS is
+      # worse than no release at all: install.sh would hand those users a
+      # binary that cannot run, which is precisely the silent failure this
+      # project keeps getting bitten by.
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: ''
+            cross: false
+          - name: linux-arm64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            ext: ''
+            cross: true
+            cross_linker: aarch64-linux-gnu-gcc
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            ext: ''
+            cross: false
+          - name: macos-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            ext: ''
+            cross: true
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: '.exe'
+            cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Needed only for the Linux arm64 cross. Written to GITHUB_ENV rather than
+      # a matrix field because the variable name embeds the target triple, which
+      # a matrix value cannot expand into.
+      - name: Install cross linker
+        if: matrix.cross_linker
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${{ matrix.cross_linker }}" \
+            >> "$GITHUB_ENV"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Platform-specific behaviour is exactly the class of bug that only shows
+      # up on one OS — CRLF line endings change what a content fragment starts
+      # with, and path separators change what a site directory resolves to.
+      # So tests run on every platform, before the build rather than after it.
+      - name: Test
+        run: cargo test --release --target ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Smoke test
+        if: ${{ !matrix.cross }}
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/clone-site${{ matrix.ext }}"
+          ls -la "$bin"
+          "$bin" version
+          "$bin" help > /dev/null
+          # An unknown subcommand must exit non-zero rather than print usage
+          # and succeed: install.sh and every wrapper key off this.
+          if "$bin" definitely-not-a-command > /dev/null 2>&1; then
+            echo "::error::unknown subcommand exited 0 — callers cannot detect failure"
+            exit 1
+          fi
+          # A missing site must fail, not build nothing and report success.
+          if "$bin" build /definitely/not/a/site > /dev/null 2>&1; then
+            echo "::error::build on a missing site exited 0"
+            exit 1
+          fi
+          echo "  smoke test ok"
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/clone-site${{ matrix.ext }}" \
+             "dist/clone-site-${{ matrix.name }}${{ matrix.ext }}"
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            tar czf "clone-site-${{ matrix.name }}.tar.gz" \
+                -C dist "clone-site-${{ matrix.name }}${{ matrix.ext }}"
+          else
+            (cd dist && 7z a "../clone-site-${{ matrix.name }}.zip" \
+                "clone-site-${{ matrix.name }}${{ matrix.ext }}")
+          fi
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clone-site-${{ matrix.name }}
+          path: |
+            dist/clone-site-${{ matrix.name }}${{ matrix.ext }}
+            clone-site-${{ matrix.name }}.*
+
+  # The Python engine is still the shipped path, so it is tested on every push
+  # whatever the port is doing. When the Rust port finally regresses the Python
+  # suite still passes, and the fallback is still there to catch it.
+  python:
+    name: python engine (shipped path)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Self test
+        run: python3 -B tests/selftest.py
+      - name: POSIX shell syntax
+        run: |
+          sh -n install.sh
+          sh -n bin/clone-site
+          # dash is the strictest POSIX sh on the runners; macOS ships bash 3,
+          # which is what most people actually run install.sh under.
+          dash -n install.sh
+          dash -n bin/clone-site
+
+  release:
+    name: release
+    needs: [build, python]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect archives
+        run: |
+          mkdir -p out
+          find artifacts \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} out/ \;
+          ls -la out/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          # Draft, not auto-published. The engine is only partly ported and
+          # install.sh does not yet fetch a binary, so publishing an incomplete
+          # set of artifacts as a finished release would be misleading.
+          draft: true
+          generate_release_notes: true

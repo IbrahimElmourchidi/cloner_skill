@@ -14,7 +14,8 @@ No framework, no build step to view it, no network. Open `index.html` from disk.
 
 Language-agnostic: the highlighter covers ~71 languages, file-type detection is
 extension-driven over ~90, and nothing in the generator contains a project name.
-Python 3 (standard library only) is the one runtime requirement.
+Python 3 (standard library only) is the one runtime requirement today — a Rust
+engine is being ported to remove even that. See [`engine/README.md`](engine/README.md).
 
 ## Install
 
@@ -144,10 +145,24 @@ project's own structure rather than a generic one.
 
 ## Documentation
 
-- `SKILL.md` — how to use the skill
+- `SKILL.md` — the skill itself: invariants, batch workflow, commands
 - `references/authoring.md` — page format, block vocabulary, escaping
 - `references/curriculum.md` — designing the step order, per ecosystem
-- `references/pitfalls.md` — every bug that produced plausible wrong output
+- `references/pitfalls.md` — every bug that produced plausible wrong output,
+  as a match-and-refuse list
+- `engine/README.md` — the Rust engine: status, what is verified, how
+
+## How it works
+
+The skill is two tiers. The rules you must always follow are inlined in
+`SKILL.md` inside named blocks, because an agent that has to go looking for them
+will skip the lookup. The long form of each — the symptom it produced, the
+pattern to match, what to do instead — is in `references/`, reached only when
+you reach the step that needs it.
+
+Lessons are written in **batches**. The skill plans first, asks for a batch
+size, and reports at the end of every batch. Quality decays on a long run and
+nothing detects it, so the stopping point is a decision rather than an accident.
 
 ## What it does not do
 
@@ -158,8 +173,9 @@ so it stays with you.
 
 ## Requirements
 
-Python 3.8+, standard library only. Node is optional — it is used to sanity-check
-`app.js` syntax if you edit the highlighter.
+Python 3.8+, standard library only, to build a site. Rust, only if you are
+working on the engine. Node is optional — used to sanity-check `app.js` syntax
+if you edit the highlighter.
 
 ## License
 

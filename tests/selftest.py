@@ -316,6 +316,92 @@ def main():
                   os.path.join(target, 'site', '_build', 'pages.py')),
               (r.stdout + r.stderr)[-300:])
 
+        # ---- SKILL.md structure ----
+        # A mis-balanced named block does not fail loudly. It degrades the
+        # skill: an unbalanced <invariants> swallows the following section, and
+        # the agent reads the file as if it were fine.
+        skill_md = open(os.path.join(ROOT, 'SKILL.md'), encoding='utf-8').read()
+
+        check('SKILL.md has frontmatter with a version',
+              skill_md.startswith('---\n') and re.search(r'^version:\s*\S', skill_md, re.M),
+              'a version is what a future migration block keys off')
+
+        try:
+            import yaml
+            fm = yaml.safe_load(skill_md.split('---\n', 2)[1])
+            check('SKILL.md frontmatter parses',
+                  isinstance(fm, dict) and {'name', 'description'} <= set(fm),
+                  'frontmatter keys: %r' % (sorted(fm) if isinstance(fm, dict) else fm,))
+        except ImportError:
+            # GitHub's ubuntu runner has PyYAML; a bare checkout may not. The
+            # shape is still checked by the key-presence assertion above, so
+            # this is a depth check, not the only one.
+            print('note: PyYAML not installed, skipping the frontmatter parse check')
+        else:
+            # The frontmatter licence is what a redistributable skill declares,
+            # and it disagreed with LICENSE while this was being written.
+            lic_head = open(os.path.join(ROOT, 'LICENSE'), encoding='utf-8').read(200)
+            m = re.search(r'^license:\s*(\S+)', skill_md, re.M)
+            check('SKILL.md licence matches LICENSE',
+                  m is not None and m.group(1).lower().replace(' ', '-')
+                  in lic_head.lower().replace(' ', '-'),
+                  'frontmatter says %r, LICENSE says %r'
+                  % (m.group(1) if m else None, lic_head.split('\n')[0]))
+
+            check('SKILL.md frontmatter has no unknown keys',
+                  set(fm) <= {'name', 'description', 'version', 'argument-hint',
+                              'license', 'allowed-tools', 'model'},
+                  'unexpected frontmatter keys: %r' % sorted(set(fm) - {
+                      'name', 'description', 'version', 'argument-hint',
+                      'license', 'allowed-tools', 'model'}))
+
+        # Named blocks are snake_case names we authored. Literal HTML elements
+        # mentioned in prose are not blocks, so they are excluded by name.
+        HTML = {
+            'html', 'head', 'body', 'main', 'nav', 'aside', 'header', 'footer',
+            'section', 'article', 'figure', 'figcaption', 'div', 'span', 'p', 'a',
+            'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'pre', 'code', 'b', 'i', 'em',
+            'strong', 'small', 'sup', 'sub', 'mark', 'del', 'ins', 'h1', 'h2',
+            'h3', 'h4', 'h5', 'h6', 'table', 'thead', 'tbody', 'tfoot', 'tr',
+            'th', 'td', 'caption', 'col', 'colgroup', 'svg', 'path', 'g', 'br',
+            'hr', 'img', 'script', 'style', 'meta', 'link', 'title', 'form',
+            'input', 'button', 'label', 'select', 'option', 'textarea', 'blockquote',
+            'q', 'cite', 'abbr', 'time', 'details', 'summary', 'template', 'wbr',
+        }
+        outside = re.sub(r'```.*?```', '', skill_md, flags=re.S)  # ignore fences
+        # A backticked `<tag>` is a pointer to a block, not a second opening of
+        # it. Counting those as opens is what turns a balanced file into a
+        # reported imbalance.
+        outside = re.sub(r'`<[a-z_]+>`', '', outside)
+        opened, closed = [], []
+        for m in re.finditer(r'<(/?)([a-z_]+)>', outside):
+            name = m.group(2)
+            if name in HTML:
+                continue
+            (closed if m.group(1) else opened).append(name)
+        check('SKILL.md named blocks balance', sorted(opened) == sorted(closed),
+              'unbalanced: opened=%r closed=%r' % (opened, closed))
+        check('SKILL.md ships an <invariants> block',
+              '<invariants>' in outside and '</invariants>' in outside,
+              'the always-apply tier is the point of the two-tier layout')
+
+        # Every file the skill tells the agent to read must exist, or the
+        # instruction is a dead end at exactly the moment it is needed.
+        named = sorted(set(re.findall(r'`(references/[a-z_-]+\.md)`', skill_md))
+                       | set(re.findall(r'`(engine/README\.md)`', skill_md)))
+        missing = [n for n in named if not os.path.exists(os.path.join(ROOT, n))]
+        check('every reference SKILL.md names exists (%d)' % len(named),
+              not missing, 'missing: %r' % missing)
+
+        # The batch workflow is the thing that keeps quality from decaying on a
+        # long run, so its three load-bearing steps must all be present.
+        for phrase, why in [('batch size', 'the size is the user\'s call'),
+                            ('Present the plan', 'no lesson before the plan is agreed'),
+                            ('whether to continue with the next batch',
+                             'the batch boundary must ask')]:
+            check('SKILL.md batch workflow states: %s' % phrase,
+                  phrase in skill_md, why)
+
         # ---- the Rust engine ----
         # Escaping is the one place where a Rust/Python difference is invisible
         # in a diff of the generator and visible in every published page, so it
