@@ -2,3 +2,11 @@ __pycache__/
 *.pyc
 .DS_Store
 docs/
+
+# Rust build output. 138 MB of it, none of it source.
+#
+# The compiled binary is not committed either, deliberately. It is
+# platform-specific, and committing one means every other platform gets the
+# wrong one. `install.sh` places the binary next to the skill; see
+# engine/README.md for how to obtain one for a platform this was not built on.
+engine/target/

@@ -1,0 +1,23 @@
+[package]
+name = "clone-site"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Builds a step-by-step teaching site from a repository. One HTML page per source file."
+license = "Apache-2.0"
+
+[[bin]]
+name = "clone-site"
+path = "src/main.rs"
+
+[dependencies]
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+regex = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

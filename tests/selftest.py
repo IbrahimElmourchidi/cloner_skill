@@ -316,6 +316,70 @@ def main():
                   os.path.join(target, 'site', '_build', 'pages.py')),
               (r.stdout + r.stderr)[-300:])
 
+        # ---- the Rust engine ----
+        # Escaping is the one place where a Rust/Python difference is invisible
+        # in a diff of the generator and visible in every published page, so it
+        # is diffed against the reference rather than asserted by hand. The
+        # hand-written assertions in util.rs were wrong twice while this was
+        # being written; the differential does not have opinions.
+        engine = os.path.join(ROOT, 'engine')
+        binary = os.path.join(engine, 'target', 'release', 'clone-site')
+        cargo = shutil.which('cargo')
+
+        if cargo:
+            r = subprocess.run([cargo, 'test', '--release'], cwd=engine,
+                               capture_output=True, text=True)
+            check('cargo test passes', r.returncode == 0,
+                  (r.stdout + r.stderr)[-400:])
+            r = subprocess.run([cargo, 'build', '--release'], cwd=engine,
+                               capture_output=True, text=True)
+            check('cargo build --release succeeds', r.returncode == 0,
+                  (r.stdout + r.stderr)[-400:])
+        else:
+            print('note: cargo not installed, skipping the Rust engine checks')
+
+        if os.path.exists(binary):
+            import html as _html
+            import random as _random
+            _random.seed(20261012)
+            frags = ['&amp', '&#x27;', '&middot;', 'x', ';', '&', '39',
+                     '&ampx', '&notreal', '&gt', '&notarealentity;', '&aacute;']
+            cases = ['', 'plain', 'a&b', '<div class="x">', "it's", '"q"',
+                     'Phase 0 &middot; Toolchain', '&mdash;', '&amp',
+                     '&notarealentity;', '&#x27;', '&#128;', '&aacute;&uuml;',
+                     'café · naïve', '&notareal;', 'zzz & notareal']
+            for _ in range(3000):
+                cases.append(''.join(_random.choice(frags)
+                                     for _ in range(_random.randint(1, 6))))
+            for _ in range(1000):
+                cases.append(''.join(chr(_random.randint(1, 0x2FFF))
+                                     for _ in range(_random.randint(1, 10))))
+
+            payload = '\n'.join(c.replace('\n', ' ').replace('\r', ' ') for c in cases) + '\n'
+            # Bytes, not text=True: universal-newline mode would rewrite a \r
+            # inside a case into \n and desynchronise the two line counts, which
+            # reads as thousands of escaping mismatches that are really one
+            # transport bug. Split on \n only, for the mirror-image reason —
+            # str.splitlines() also breaks on \x0b, \x0c, \x1c and  ,
+            # so it over-counts lines the engine did emit.
+            r = subprocess.run([binary, '__escape-diff'],
+                               input=payload.encode('utf-8'),
+                               capture_output=True)
+            got = r.stdout.decode('utf-8').split('\n')
+            if got and got[-1] == '':
+                got.pop()
+            expected = [f"{_html.escape(c)}\t{_html.unescape(c)}" for c in cases]
+            mismatched = [i for i, (e, a) in enumerate(zip(expected, got)) if e != a]
+            check('escape/unescape matches the reference on %d cases' % len(cases),
+                  len(got) == len(expected) and not mismatched,
+                  '%d mismatches, first: %r -> ref %r, engine %r' % (
+                      len(mismatched),
+                      cases[mismatched[0]] if mismatched else '',
+                      expected[mismatched[0]] if mismatched else '',
+                      got[mismatched[0]] if mismatched else ''))
+        else:
+            print('note: engine binary not built, skipping the escaping differential')
+
         # ---- the generator holds no project names ----
         gen = ' '.join(open(os.path.join(SCRIPTS, f), encoding='utf-8').read()
                        for f in ('build.py', 'index.py'))
