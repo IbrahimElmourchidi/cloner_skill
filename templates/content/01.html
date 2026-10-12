@@ -1,0 +1,60 @@
+<h2>The file</h2>
+
+<pre class="code" data-lang="python"><code># src/main.py — hand-written, committed
+
+def main() -&gt; None:
+    print("hello")
+
+
+if __name__ == "__main__":
+    main()
+</code></pre>
+
+<p>Twelve lines, and two of them are load-bearing. The <code>if __name__</code>
+guard is the one that matters: it lets the module be imported without running,
+which is the difference between <code>main.py</code> being a program and being
+a file that happens to print something.</p>
+
+<div class="verdict">
+  <span class="badge">Best practice</span>
+  <p><b>The entry-point guard is not optional.</b>
+  Every Python tool and test runner imports the module to inspect it. Without
+  the guard the import has a side effect, so the test suite prints to stdout on
+  collection.</p>
+</div>
+
+<div class="risk">
+  <b class="t">What breaks</b>
+  <p>Calling <code>main()</code> at module scope instead. The first test that
+  imports this file hangs, and the traceback points at the import rather than
+  at the mistake.</p>
+</div>
+
+<div class="warn">
+  <b class="t">What fails quietly</b>
+  <p>Nothing here. That is the point of starting with a file this small — it
+  gives every later step something that can only break loudly.</p>
+</div>
+
+<div class="note">
+  <b class="t">On line one</b>
+  <p>The comment above the code is not decoration. Every code block on this
+  site names its path and says whether the file is hand-written or generated,
+  so a reader can tell at a glance which files they are allowed to edit.</p>
+</div>
+
+<h2>Is this the whole file?</h2>
+
+<p>Yes. Early steps show complete files. Later steps sometimes show an excerpt
+because the surrounding file has grown past the point where reproducing it
+helps — when that happens, say so here rather than letting the reader assume
+the block is the entire contents.</p>
+
+<h2>What could be better</h2>
+
+<div class="key">
+  <b class="t">Not fixed here, on purpose</b>
+  <p>There is no argument parsing and no exit code. Both belong in the CLI step
+  that comes after this one, and bolting them on now would mean editing this
+  file twice — once to exist, once to be correct.</p>
+</div>
