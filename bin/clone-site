@@ -3,6 +3,7 @@
 #
 #   clone-site init <project> --name "My Project"   scaffold a site
 #   clone-site scan <project>                       inventory + draft step order
+#   clone-site render [site]                        re-render + validate, no edits
 #   clone-site help
 #
 # This exists for discoverability, not capability. Every subcommand is a
@@ -51,6 +52,7 @@ clone-site — turn a repository into a step-by-step teaching site
 
   clone-site init <project> [options]   Scaffold a site for a repository
   clone-site scan <project> [options]   Inventory a repo, draft a step order
+  clone-site render [site]              Re-render and validate, changing nothing
   clone-site help                       This message
 
 init
@@ -66,8 +68,13 @@ scan
       --skip <dir>    Replace the built-in skip list (repeatable)
       --include <dir> Re-enable a directory skipped by default (repeatable)
 
-Building, indexing and validating run inside the generated site, in
-docs/site/_build/. See SKILL.md for the full picture.
+render
+  <site>             Path to the generated site. Default: docs/site
+
+render is idempotent and touches nothing under _build/content/. It is the
+right command after a hand-edit, after a split, or on someone else's site.
+
+See SKILL.md for the full picture.
 EOF
 }
 
@@ -86,15 +93,35 @@ run() {
     shift
     script=$ROOT/scripts/$name
     [ -f "$script" ] || die "missing scripts/$name — is this an incomplete checkout?"
-    if [ -z "$PY" ]; then
-        die "python3 not found on PATH.
+    [ -z "$PY" ] && need_python
+    "$PY" "$script" "$@"
+    exit $?
+}
+
+# render [site]  — build + index + both validators, inside the site's own _build.
+#
+# Deliberately runs the *site's* copies of the scripts rather than this skill's.
+# Once a site exists it owns its generator, and that is what lets it be updated
+# by copying newer files over it without touching the installed skill at all.
+render() {
+    site=${1:-docs/site}
+    build_dir=$site/_build
+    [ -d "$build_dir" ] || die "no site at $site — run: clone-site init <project>"
+    [ -z "$PY" ] && need_python
+    for s in build.py index.py check_site.py check_svg.py; do
+        [ -f "$build_dir/$s" ] || die "$site/_build/$s is missing — is this an incomplete site?"
+    done
+    cd "$build_dir" || die "cannot enter $build_dir"
+    "$PY" build.py && "$PY" index.py || die "render failed"
+    "$PY" check_site.py && "$PY" check_svg.py || die "validation failed — not rendering clean"
+}
+
+need_python() {
+    die "python3 not found on PATH.
   The generator is Python 3, standard library only — nothing to pip install.
   macOS:       brew install python3
   Debian/Ubuntu: apt install python3
   Windows:     install from python.org and tick \"Add to PATH\"."
-    fi
-    "$PY" "$script" "$@"
-    exit $?
 }
 
 cmd=${1:-help}
@@ -103,6 +130,7 @@ cmd=${1:-help}
 case $cmd in
     init)          run bootstrap.py "$@" ;;
     scan)          run scan.py "$@" ;;
+    render)        render "$@" ;;
     help|-h|--help) usage ;;
     -v|--version)  printf 'cloner_skill (git)\n' ;;
     *)             die "unknown command: $cmd  (try: clone-site help)" ;;

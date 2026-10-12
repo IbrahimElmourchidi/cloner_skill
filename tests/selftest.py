@@ -455,28 +455,20 @@ def main():
         check('no command has two dispatch bullets', not dupes,
               'duplicated dispatch for: %r — one of them is contradicting the '
               'other' % dupes)
-        # `build` gates on its *argument*: only `build N` authors and therefore
-        # only it stops. A check for the bare command would be wrong, and a
-        # check that ignored the argument would miss the real gate.
-        # The pattern covers the plain bullet (`plan`) and the qualified one
-            # (`build` with a number), because `build` has two bullets and only
-            # the authoring one is a gate. `(?:`backtick qualifier)?` is what
-            # lets one loop cover both shapes.
-            # The pattern covers a plain bullet (`plan`) and a qualified one
-        # (`build` with a number), because `build` has two bullets and only the
-        # authoring one is a gate.
-        for gate, label in (('plan', 'plan'), ('build', 'build N'),
-                            ('appendix', 'appendix')):
+# Each gate is a plain bullet now, so one pattern covers all three. While
+        # `build` still had two bullets this loop had to disambiguate them by
+        # qualifier, which meant a gate could pass by matching the *wrong* bullet
+        # \u2014 the render-only one, which has no batch to stop at. `render` gives
+        # that half its own name, so the ambiguity is gone from the document
+        # rather than papered over in the regex.
+        for gate in ('plan', 'build', 'appendix'):
             line = re.search(
-                r'^- \*\*`%s`(?: with a number)?\*\*\s*\u2014(.*?)(?=\n- \*\*|\Z)'
+                r'^- \*\*`%s`\*\*\s*—(.*?)(?=\n- \*\*|\Z)'
                 % re.escape(gate),
                 dispatch.group(1) if dispatch else '', re.S | re.M)
-            # `build` must match the *authoring* bullet, not the render-only one.
-            if gate == 'build' and line is not None and 'no argument' in line.group(0):
-                line = None
-            check('gate `%s` says it stops' % label,
+            check('gate `%s` says it stops' % gate,
                   line is not None and 'stop' in line.group(1).lower(),
-                  'the `%s` dispatch line must state that it stops' % label)
+                  'the `%s` dispatch line must state that it stops' % gate)
 
         gates_note = re.search(r'\*\*Three of them are gates.*?before\.', skill_md, re.S)
         check('SKILL.md names the three gates and why each one exists',
@@ -493,6 +485,54 @@ def main():
                              'the batch boundary must ask')]:
             check('SKILL.md batch workflow states: %s' % phrase,
                   phrase in skill_md, why)
+
+        # `build` with no number authors 10 lessons. That default is the whole
+        # reason `render` had to become a separate command, so it earns a check:
+        # if the default is ever dropped, `build` stops being safe to type bare
+        # and the split between the two halves becomes ambiguous again.
+        # Scoped to the dispatch section, not the whole file. The command table
+        # already says both things, so a whole-file check passes on the table
+        # even when the dispatch bullet \u2014 the text an agent actually reads at
+        # invocation \u2014 has lost them. That is exactly how the first version of
+        # these two checks passed every mutation.
+        disp = dispatch.group(1) if dispatch else ''
+        disp = dispatch.group(1) if dispatch else ''
+
+        def bullet(cmd):
+            """The body of one dispatch bullet, or None."""
+            m = re.search(r'^- \*\*`%s`\*\*\s*—(.*?)(?=\n- \*\*|\Z)'
+                          % re.escape(cmd), disp, re.S | re.M)
+            return m.group(1) if m else None
+
+        check('the build dispatch bullet states the default batch size',
+              bullet('build') is not None
+              and re.search(r'\b10\b', bullet('build')) is not None,
+              'the default is what makes a bare `build` mean something, and the '
+              'dispatch bullet is where an agent reads it')
+        check('the render dispatch bullet states that it changes no content',
+              bullet('render') is not None
+              and re.search(r'(no content|changing nothing|idempotent)',
+                            bullet('render'), re.I) is not None,
+              'render must state that it edits nothing, or it cannot be told '
+              'apart from build')
+
+        # `--context` is a standing instruction for the whole build, not a note
+        # about the plan. Wording that scopes it to `plan` alone has described
+        # something much less useful than what the flag actually does.
+        check('plan documents --context', '--context' in skill_md,
+              'the flag is advertised nowhere')
+        check('--context is documented as holding across later commands',
+              'Hold it for every later command' in skill_md,
+              'a context that only shapes the plan is wasted - the batch loop '
+              'is where it actually pays off')
+
+        # `render` must also be reachable from a shell, not only as a slash
+        # command: it is the fastest confirmation that a hand-edited fragment
+        # still renders clean, and that check is worth keeping cheap.
+        wrapper = open(os.path.join(ROOT, 'bin', 'clone-site')).read()
+        check('bin/clone-site has a render subcommand',
+              re.search(r'^\s+render\)\s+render', wrapper, re.M) is not None,
+              'the shell wrapper cannot re-render, so a hand-edit has no quick check')
 
         # ---- the Rust engine ----
         # Escaping is the one place where a Rust/Python difference is invisible

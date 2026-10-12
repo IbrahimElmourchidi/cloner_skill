@@ -13,7 +13,7 @@ description: >
   skill was last used on.
 version: 1.1.0
 user-invocable: true
-argument-hint: "[init|scan|plan|build|appendix|check|split|renumber|next]"
+argument-hint: "[init|scan|plan|build|render|appendix|check|split|renumber|next]"
 license: MIT
 ---
 
@@ -110,11 +110,18 @@ invariants above apply to all of them.
   inventory, and stop. Do not write `pages.toml`.
 - **`plan`** — read the project properly, design the phases, write `pages.toml`,
   then **present the plan and stop.** See [Plan first, then batch](#plan-first-then-batch).
-- **`build` with a number** — take the batch size from the argument. Author that
-  many lessons, write each to `content/NN.html`, render, validate, then **stop**
-  and report. Ask whether to continue; never exceed the agreed batch without
-  asking, because "keep going" is a new agreement rather than an extension of the
-  last one. See [3. Author and build](#3-author-and-build).
+  With `--context "..."`, treat that text as a standing instruction for the whole
+  build — audience, depth, what to skip, what to emphasise — and hold it for
+  every later command too. It is not just for the plan; see
+  [Passing context](#passing-context).
+- **`build`** — take the batch size from the argument, or **10** if there is no
+  number. Author that many lessons, write each to `content/NN.html`, render,
+  validate, then **stop** and report. Ask whether to continue; never exceed the
+  agreed batch without asking, because "keep going" is a new agreement rather
+  than an extension of the last one. See [3. Author and build](#3-author-and-build).
+- **`render`** — run the generator and both validators, changing nothing under
+  `content/`. This is the idempotent half. Use it after a hand-edit, after
+  `split` or `renumber`, or on a site someone else wrote.
 - **`appendix`** — read `references/appendix.md` and follow it. With no
   argument, propose the topics and stop for approval before writing. With a topic,
   write that one.
@@ -125,9 +132,9 @@ invariants above apply to all of them.
   proposed split before editing anything.
 - **`renumber`** — read `references/renumbering.md` and follow it. Never rewrite
   numbers without classifying each occurrence first.
-- **`next`** — the same as `build` with the size from the last agreed batch.
-  "Keep going" from the user means this, and it is a new agreement rather than an
-  extension of the old one.
+- **`next`** — the same as `build` with the size from the last agreed batch, or
+  10 if there was no last batch. "Keep going" from the user means this, and it is
+  a new agreement rather than an extension of the old one.
 
 Invoked with **no argument**, or with free text, do the obvious thing: if the
 user describes what they want in their own words, follow the workflow below from
@@ -145,13 +152,15 @@ validator for "this page is less careful than the previous one." So the work is
 batched, and the batch size is the user's call.
 
 1. **Read the project.** Run `scan`, read the actual code, design the phases.
-   Write `pages.toml`.
+   Write `pages.toml`. If `--context` was given, read it first and hold it for
+   every later command — see [Passing context](#passing-context).
 2. **Present the plan and stop.** Phases, lesson count, ordering rationale, and
    anything you are unsure about — files that look generated, a module whose role
    you had to guess at. **Do not write a lesson until the plan is agreed.**
-3. **Ask for a batch size**, and offer a default. A good one is 8–15 for the
-   first batch: enough to establish the rhythm and the page shape, few enough
-   that a course correction is cheap.
+3. **Ask for a batch size**, and offer a default of 10. A good one is 8–15 for
+   the first batch: enough to establish the rhythm and the page shape, few enough
+   that a course correction is cheap. If the user has already said "keep going"
+   without naming a size, take 10 and say so rather than asking again.
 4. **Build that many lessons.** `/clone-site build N` writes each fragment,
    renders, and validates. Stop at the batch boundary even if you have momentum —
    the point of a batch is the stopping point.
@@ -166,6 +175,36 @@ not a continuation of the last one.
 
 ---
 
+## Passing context
+
+`plan` takes an optional `--context` flag whose text is a **standing
+instruction for the whole build**, not a note about the plan:
+
+```bash
+/clone-site plan ~/code/my-project --context "for junior hires who know Flutter
+but not Dart; skip generated files; spend more time on state management than
+on routing"
+```
+
+What it is good for: the audience, the depth, what to skip, what to emphasise,
+anything you would otherwise have to ask about at the first gate.
+
+**Hold it for every later command.** A `--context` that only shapes `plan` is
+wasted, because the batch loop is where it actually pays off — "skip generated
+files" is a decision made while writing lesson 40, not while planning lesson 1.
+Echo it back at the first gate so the user can see it was understood, and keep
+it in force across `build`, `appendix`, `split` and `renumber`.
+
+**When it conflicts with the project, the project wins.** If the user asks for a
+site covering a subsystem that does not exist, say so at the gate rather than
+inventing it. Context narrows scope; it does not author content.
+
+Later corrections do not need the flag again. "Actually make these for a team
+that already knows Flutter" is an instruction, not a mode — apply it and carry
+it forward.
+
+---
+
 ## Commands
 
 Invoked as `/clone-site COMMAND`. Optional argument narrows the target.
@@ -174,10 +213,11 @@ Invoked as `/clone-site COMMAND`. Optional argument narrows the target.
 |---|---|---|---|
 | `init` | project path | Scaffold a site: copy the generator in, write the config, build, validate. | [below](#commands) |
 | `scan` | project path | Inventory the repo and draft a step order. | [step 1](#1-inventory-the-project) |
-| `plan` | project path | Read the project, design the phases, write `pages.toml`, present the plan. | [step 2](#2-design-the-curriculum) |
+| `plan` | project path, `--context "…"` | Read the project, design the phases, write `pages.toml`, present the plan. | [step 2](#2-design-the-curriculum) |
 | `appendix` | topic, or none | Propose the appendix topics, then write them. | `references/appendix.md` |
-| `build` | batch size | Author that many lessons, write them to disk, render, validate, then stop and ask. **No argument renders only.** | [step 3](#3-author-and-build) |
-| `check` | `fragments` \| `pages` | Validate without rebuilding. | [step 4](#4-build-and-validate) |
+| `build` | batch size, default 10 | Author that many lessons, write them to disk, render, validate, then stop and ask. | [step 3](#3-author-and-build) |
+| `render` | — | Render every page and validate, changing no content. | [step 4](#4-render-and-validate) |
+| `check` | `fragments` \| `pages` | Validate without rebuilding. | [step 4](#4-render-and-validate) |
 | `split` | step number | Break one oversized lesson into several. | `references/splitting.md` |
 | `renumber` | — | Shift step numbers after an insert, delete, or split. | `references/renumbering.md` |
 | `next` | — | Continue the current batch run. | [batch workflow](#plan-first-then-batch) |
@@ -186,12 +226,12 @@ Invoked as `/clone-site COMMAND`. Optional argument narrows the target.
 command that copies files into a project.
 
 **These are modes of one workflow, not separate tools.** `plan` → `build N`
-(repeat) → `appendix` → `build` is the arc; the others exist because those steps
+(repeat) → `appendix` → `render` is the arc; the others exist because those steps
 get interrupted or need redoing.
 
-**Three of them are gates, not work:** `plan`, `build N`, and `appendix` stop and
+**Three of them are gates, not work:** `plan`, `build`, and `appendix` stop and
 ask rather than continuing on an assumption. `plan` stops because lesson order is
-a judgement call the user owns. `build N` stops at the batch boundary because
+a judgement call the user owns. `build` stops at the batch boundary because
 quality decays on a long run and nothing detects it. `appendix` stops because its
 scope is a judgement call, and it reads better after the lessons than before.
 
@@ -333,12 +373,18 @@ One fragment per lesson, `content/07.html`, inserted verbatim into the shell.
 ```bash
 /clone-site build 10     # author 10, write, render, validate, then ask
 /clone-site build 25     # a bigger batch once the page shape has settled
-/clone-site next         # same size as the last batch
+/clone-site build        # no number: 10, the default
+/clone-site next         # same size as the last batch, or 10
 ```
 
-**No argument means render only** — see [step 4](#4-build-and-validate). That is
-the idempotent half, and it is why `build` alone is still safe to run after a
-`split` or a `renumber`.
+**The default is 10 because a batch has to be big enough to establish the rhythm
+and small enough that a course correction is still cheap.** Quality starts
+decaying somewhere around lesson 30 of an uninterrupted run and nothing reports
+it, so the batch is the only safeguard there is. Ten is roughly where a mistake
+in the page shape is still visible across one batch rather than three.
+
+To re-render without authoring anything, use `render` — see
+[step 4](#4-render-and-validate). Never infer that from a bare `build`.
 
 `check_site.py` validates `_build/content/*.html` *before* the built pages and
 reports `file:line`. A fragment is inserted verbatim into the shell, so an
@@ -348,7 +394,9 @@ lookalikes downstream.
 
 ### 4. Render and validate
 
-No content changes. Safe on its own at any point.
+`/clone-site render`. No content changes. Safe on its own at any point, and the
+right command after a hand-edit, after `split` or `renumber`, or on a site
+someone else wrote.
 
 ```bash
 python3 build.py && python3 index.py

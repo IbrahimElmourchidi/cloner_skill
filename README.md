@@ -161,21 +161,24 @@ Invoked as `/clone-site COMMAND` once the agent has restarted.
 |---|---|---|
 | `init` | project path | Scaffold a site: copy the generator in, write the config, build, validate |
 | `scan` | project path | Inventory the repo and draft a step order |
-| `plan` | project path | Read the project, design phases, write `pages.toml`, present the plan |
+| `plan` | project path, `--context "…"` | Read the project, design phases, write `pages.toml`, present the plan |
 | `appendix` | topic, or none | Propose the appendix topics, then write them |
-| `build` | batch size | Author that many lessons, write them to disk, render, validate, then stop and ask. **No argument renders only.** |
+| `build` | batch size, default 10 | Author that many lessons, write them to disk, render, validate, then stop and ask |
+| `render` | — | Re-render every page and validate, changing no content |
 | `check` | `fragments` \| `pages` | Validate without rebuilding |
 | `split` | step number | Break one oversized lesson into several |
 | `renumber` | — | Shift step numbers after an insert, delete, or split |
 | `next` | — | Continue the current batch run |
 
 They are modes of one workflow, not separate tools: `plan` → `build N` (repeat)
-→ `appendix` → `build` is the arc, and the rest exist because those steps get
+→ `appendix` → `render` is the arc, and the rest exist because those steps get
 interrupted or redone.
 
-`build` is both halves of the loop, split by whether you pass a number. With one
-it authors that many lessons and then renders and validates; without one it only
-renders, which is what keeps it safe to run after a `split` or a `renumber`.
+`build` takes a batch size and **defaults to 10** — big enough to establish the
+rhythm, small enough that a course correction is still cheap. `render` is the
+idempotent half: it re-renders and validates and changes nothing under
+`content/`, so it is what you want after a hand-edit, a `split`, a `renumber`,
+or on a site someone else wrote.
 
 `split` and `renumber` are almost always used together, since splitting shifts
 every later number. Both carry their own reference file.
@@ -189,7 +192,7 @@ The order matters, and three of these steps are gates rather than work.
 /clone-site plan ~/code/my-project                      # 2  ← stops and asks
 /clone-site build 10                                    # 3  ← repeat until done
 /clone-site appendix                                    # 4  ← stops and asks
-/clone-site build                                      # 5
+/clone-site render                                     # 5
 ```
 
 ### 1. `init`
@@ -217,7 +220,8 @@ asks whether to continue.
 ```bash
 /clone-site build 10
 /clone-site build 25        # a bigger batch once the page shape has settled
-/clone-site next            # same size as the last batch
+/clone-site build           # no number: 10
+/clone-site next            # same size as the last batch, or 10
 ```
 
 Writing and building are one command because the halves are not separable in
@@ -243,14 +247,15 @@ Worth doing *after* the lessons rather than before. An appendix is usually the
 result of having understood the lessons, and writing one first produces
 background nobody had earned yet.
 
-### 5. `build`
+### 5. `render`
 
-With no argument: renders every page and validates, changing no content.
-Idempotent, and safe on its own at any point — including after `split` or
-`renumber`.
+Renders every page and validates, changing no content. Idempotent, and safe on
+its own at any point — including after `split` or `renumber`. Also available as
+`clone-site render` from a shell, which is the fastest way to confirm a
+hand-edited fragment still renders clean.
 
 ```bash
-/clone-site build
+/clone-site render
 /clone-site check fragments   # validate authored content, no build needed
 ```
 
@@ -262,12 +267,14 @@ Adding one lesson:
 /clone-site build 1
 ```
 
+Then `render` to confirm it.
+
 Changing the shape of the site — splitting a big file, inserting a step:
 
 ```bash
 /clone-site split 87         # then, almost always:
 /clone-site renumber
-/clone-site build
+/clone-site render
 ```
 
 Splitting shifts every later step number, so `renumber` follows it unless the
@@ -283,7 +290,7 @@ The gates are the point, not friction:
 | Command | Stops because |
 |---|---|
 | `plan` | Lesson order is a judgement call you own |
-| `build N` | Quality decays on a long run; the batch boundary is the safeguard |
+| `build` | Quality decays on a long run; the batch boundary is the safeguard |
 | `appendix` | Scope is a judgement call, and it reads better after the lessons |
 
 None of them proceed on an assumption about what you wanted. If an assumption is
