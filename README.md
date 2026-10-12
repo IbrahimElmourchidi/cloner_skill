@@ -7,32 +7,89 @@ the real file contents and a plain assessment of whether its choices are good.
 No framework, no build step to view it, no network. Open `index.html` from disk.
 
 ```bash
-# scaffold a working site for any project
-python3 scripts/bootstrap.py ~/code/my-project --name "My Project"
-
-# see what the project is made of, and draft a step order
-python3 scripts/scan.py ~/code/my-project
+./install.sh                                            # install for every agent found
+./bin/clone-site init ~/code/my-project --name "My Project"
+./bin/clone-site scan ~/code/my-project
 ```
 
-Language-agnostic: the highlighter covers ~55 languages, file-type detection is
+Language-agnostic: the highlighter covers ~71 languages, file-type detection is
 extension-driven over ~90, and nothing in the generator contains a project name.
+Python 3 (standard library only) is the one runtime requirement.
 
 ## Install
 
 ```bash
-git clone https://github.com/IbrahimElmourchidi/cloner_skill.git \
-    ~/.claude/skills/clone-site
+git clone https://github.com/IbrahimElmourchidi/cloner_skill.git
+cd cloner_skill
+./install.sh
 ```
 
-Then ask for what you want in your own words — *"set up the step-by-step guide
-site for this repo"*, *"turn this project into a file-by-file walkthrough"*.
-The skill's description covers the phrasings; you do not have to name it.
+`install.sh` detects every AI agent on the machine and installs for all of them.
+It is safe to re-run — that is the update path.
 
-To use it directly instead:
+| Flag | |
+|---|---|
+| `--dry-run` | print the plan, change nothing |
+| `--list` | report what was detected, install nothing |
+| `--uninstall` | remove every link and the canonical copy |
+| `-a, --agents a,b` | restrict to specific agents |
+| `--link ID=PATH` | add an agent that is not in the table |
+| `-f, --force` | replace files that are in the way |
+
+**Restart your agents afterwards.** Skills are discovered at startup, not
+watched for changes — an installed skill is invisible until the agent restarts.
+
+### How it installs
+
+One real copy, then symlinks:
+
+```
+~/.agents/skills/clone-site/          ← the only copy on disk
+~/.claude/skills/clone-site           → ~/.agents/skills/clone-site
+~/.gemini/skills/clone-site           → ~/.agents/skills/clone-site
+~/.gemini/antigravity-cli/skills/…    → ~/.agents/skills/clone-site
+~/.config/opencode/skills/clone-site  → ~/.agents/skills/clone-site
+```
+
+`~/.agents/skills/` is the cross-client location the [Agent Skills
+specification](https://agentskills.io) documents for interoperability, so
+clients that read it — Codex, Cursor, and others — pick the skill up with no
+link at all. The symlinks exist for the clients that read only their own
+directory.
+
+Because there is exactly one copy, updating means re-running `./install.sh`;
+nothing drifts between agents.
+
+### Agent coverage is deliberately short
+
+The table in `install.sh` lists only agents whose directory layout is verified
+— checked against this machine, or documented by the client's own docs. A wrong
+path would create a directory nothing ever reads while you believed the skill
+was installed, which is worse than an agent being absent.
+
+An agent not listed is one flag:
 
 ```bash
-export SKILL=~/.claude/skills/clone-site
-python3 $SKILL/scripts/bootstrap.py ~/code/my-project --name "My Project"
+./install.sh --link myagent=~/.config/myagent/skills
+```
+
+Currently covered: Claude Code, Gemini CLI, Gemini Antigravity, OpenCode (all
+linked), plus Codex and Cursor (covered by `~/.agents/skills/`).
+
+### To run without installing
+
+The scripts are plain Python 3, stdlib only. Nothing else is required:
+
+```bash
+python3 scripts/bootstrap.py ~/code/my-project --name "My Project"
+python3 scripts/scan.py ~/code/my-project
+```
+
+Or use the wrapper, which resolves its own location:
+
+```bash
+./bin/clone-site init ~/code/my-project --name "My Project"
+./bin/clone-site scan ~/code/my-project
 ```
 
 ## What gets generated

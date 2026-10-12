@@ -231,6 +231,91 @@ def main():
               % (len(unhighlighted), ', '.join(unhighlighted[:12])
                  + (' …' if len(unhighlighted) > 12 else '')))
 
+        # ---- install.sh: agent detection, linking, idempotency, uninstall --
+        # Three bugs lived here and none would show up by reading it: the
+        # canonical path resolved to <skill>/bin so the script lookup failed;
+        # a second run refused to overwrite its own install; and a partial
+        # uninstall deleted the shared copy and left dangling links.
+        fh = os.path.join(tmp, 'fakehome')
+        os.makedirs(os.path.join(fh, '.claude', 'skills'))
+        os.makedirs(os.path.join(fh, '.gemini', 'skills'))
+        os.makedirs(os.path.join(fh, '.config', 'opencode', 'skills'))
+
+        def install(*args, home=None):
+            env = dict(os.environ, HOME=home or fh, NO_COLOR='1')
+            return subprocess.run(['sh', os.path.join(ROOT, 'install.sh')] + list(args),
+                                  capture_output=True, text=True, env=env)
+
+        canon = os.path.join(fh, '.agents', 'skills', 'clone-site')
+
+        r = install('--dry-run')
+        check('install.sh --dry-run succeeds', r.returncode == 0, r.stderr[-200:])
+        check('install.sh --dry-run creates nothing',
+              not os.path.exists(canon)
+              and not os.path.exists(os.path.join(fh, '.claude', 'skills', 'clone-site')),
+              'dry run must not touch the filesystem')
+
+        r = install()
+        check('install.sh succeeds', r.returncode == 0, r.stderr[-300:])
+        check('canonical copy created with the marker',
+              os.path.isfile(os.path.join(canon, '.installed-by-cloner-skill')))
+        check('canonical has no __pycache__',
+              not any('__pycache__' in d for d, _, _ in os.walk(canon)))
+        links = [os.path.join(fh, '.claude', 'skills', 'clone-site'),
+                 os.path.join(fh, '.gemini', 'skills', 'clone-site'),
+                 os.path.join(fh, '.config', 'opencode', 'skills', 'clone-site')]
+        check('one symlink per detected agent, all resolving to the canonical copy',
+              all(os.path.islink(p) and os.path.realpath(p) == canon for p in links),
+              'links: %r' % [(p, os.path.islink(p)) for p in links])
+
+        # The update path: running the installer twice must work.
+        r = install()
+        check('install.sh is re-runnable (the update path)', r.returncode == 0,
+              'second install failed: ' + r.stderr[-300:])
+        check('re-install keeps the links intact',
+              all(os.path.islink(p) for p in links))
+
+        # A directory that is not ours must not be replaced silently.
+        foreign = os.path.join(fh, '.agents', 'skills', 'foreign')
+        os.makedirs(foreign)
+        open(os.path.join(foreign, 'x.txt'), 'w').write('x')
+        r = install('--canonical', foreign)
+        check('install.sh refuses a foreign directory', r.returncode != 0)
+        check('and left it alone', os.path.isfile(os.path.join(foreign, 'x.txt')))
+        r = install('--canonical', foreign, '--force')
+        check('install.sh --force replaces it', r.returncode == 0)
+
+        # A partial uninstall must not strand the other agents' links.
+        r = install('--uninstall', '-a', 'claude')
+        check('partial uninstall succeeds', r.returncode == 0, r.stderr[-200:])
+        check('canonical survives while other agents still link to it',
+              os.path.isdir(canon))
+        dangling = [p for p in links[1:] if os.path.islink(p) and not os.path.exists(p)]
+        check('no dangling symlinks after a partial uninstall', not dangling,
+              'dangling: %r' % dangling)
+
+        r = install('--uninstall')
+        check('full uninstall succeeds', r.returncode == 0, r.stderr[-200:])
+        check('full uninstall removes canonical and every link',
+              not os.path.exists(canon)
+              and not any(os.path.exists(p) for p in links))
+
+        # ---- the installed copy must work on its own ----
+        # It has to find scripts/ relative to itself, which it gets wrong if the
+        # root is resolved as bin/ instead of the directory above it.
+        r = install()
+        target = os.path.join(tmp, 'instproj')
+        os.makedirs(os.path.join(target, 'src'))
+        open(os.path.join(target, 'src', 'a.py'), 'w').write('print(1)\n')
+        env = dict(os.environ, HOME=fh, NO_COLOR='1')
+        r = subprocess.run([os.path.join(canon, 'bin', 'clone-site'), 'init', target,
+                            '--name', 'T', '--out', 'site'],
+                           capture_output=True, text=True, env=env, cwd=tmp)
+        check('installed copy scaffolds a site from an unrelated cwd',
+              r.returncode == 0 and os.path.exists(
+                  os.path.join(target, 'site', '_build', 'pages.py')),
+              (r.stdout + r.stderr)[-300:])
+
         # ---- the generator holds no project names ----
         gen = ' '.join(open(os.path.join(SCRIPTS, f), encoding='utf-8').read()
                        for f in ('build.py', 'index.py'))

@@ -26,19 +26,25 @@ the file-type tables are extension-driven.
 ## Quickstart
 
 ```bash
-SKILL=<path to this skill>
-
-# 1. scaffold a working site (builds + validates itself)
-python3 $SKILL/scripts/bootstrap.py ~/code/my-project --name "My Project"
-
-# 2. see what the project is made of, and draft a step order
-python3 $SKILL/scripts/scan.py ~/code/my-project
-
-# 3. fill in _build/pages.py, write _build/content/NN.html, rebuild
-cd ~/code/my-project/docs/site/_build
-python3 build.py && python3 index.py
-python3 check_site.py     # must print BAD: none
+# from a clone of this repo
+./install.sh                                    # install for every agent detected
+./bin/clone-site init ~/code/my-project --name "My Project"
 ```
+
+Or invoke the scripts directly, from anywhere:
+
+```bash
+SKILL=~/.agents/skills/clone-site    # where install.sh puts the canonical copy
+python3 $SKILL/scripts/bootstrap.py ~/code/my-project --name "My Project"
+```
+
+Both paths do the same thing. `install.sh` additionally symlinks the skill into
+each detected agent's own directory; scripts that reach `SKILL` can be run from
+whichever copy is convenient.
+
+Once installed, **the skill must be asked for in conversation** — an agent
+discovers skills at startup, so the one you are talking to needs a restart
+before it can see it.
 
 `bootstrap.py` writes `docs/site/assets/`, `docs/site/_build/`, a filled-in
 `config.py`, and one example lesson, then runs the build and both validators
