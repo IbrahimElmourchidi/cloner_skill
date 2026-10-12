@@ -162,7 +162,7 @@ python3 check_svg.py        # must print problems: 0
 ```
 
 > A Rust engine is being ported as a drop-in replacement, so that installing the
-> skill needs no interpreter. `build` is done and verified; `index`, `check`,
+> skill needs no interpreter. `build` and `check` are done and verified; `index`,
 > `check-svg`, `scan` and `init` are not. Until they all exist, the commands
 > above are the ones to use — `bin/clone-site` still dispatches to Python. See
 > `engine/README.md`.

@@ -168,6 +168,8 @@ def check_fragments(bad):
         src = open(os.path.join(CONTENT, f), encoding='utf-8').read()
         if not re.search(r'<h2', src):
             bad.append('content/%s: starts without an <h2>' % f)
+        # An empty fragment is the common case behind that check and the only
+        # one where the filename gives no clue what went wrong.
     return sorted(on_disk)
 
 

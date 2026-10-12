@@ -42,8 +42,8 @@ Nothing in the project is code, so there is nothing there to fork.
 | Subcommand | Ported | Notes |
 |---|---|---|
 | `build` | **yes** | verified end to end; see below |
+| `check` | **yes** | agrees with the reference on 474 real fragments |
 | `index` | no | |
-| `check` | no | |
 | `check-svg` | no | |
 | `scan` | no | |
 | `init` | no | |
@@ -81,6 +81,56 @@ being written — one claimed `&notareal;` is unresolvable, when `not` makes it
 resolve to `¬areal;`. That is the argument for the differential: assertions
 written from the same understanding as the code cannot catch the
 misunderstanding.
+
+### The ported `check`
+
+The structural validator, verified two ways.
+
+**Against the reference, on the whole real corpus.** All 474 non-empty content
+fragments from the 502-lesson reference site, byte-exact, one document per
+comparison: 474 agree, 0 differ. Not a hand-picked sample — every fragment that
+site actually contains.
+
+The 27 fragments it *excludes* are zero-byte files on disk. Both validators
+report them, so they are checked separately: the engine says "starts without an
+`<h2>`", which is right. (The site-local fork of the validator does not carry
+that check at all, which is why its run is green. The engine is the stricter of
+the two, deliberately — it carries the skill's checks, not that site's subset.)
+
+**Differentially, in `tests/selftest.py`.** The same parser, driven through the
+real binary over generated inputs. Driving the binary rather than calling into
+the library is the point: an earlier version of this parser passed its own unit
+tests while the binary reported the wrong line, because the two paths were not
+tokenizing the same string.
+
+#### One deliberate divergence
+
+The reference reports an emoji at the line where the text run *began*. The engine
+reports the line the emoji is actually on. For a finding inside a paragraph that
+spans five lines, the reference names row 1 and the emoji is on row 4. The engine
+is the more useful answer, and it is asserted explicitly rather than diffed,
+because diffing would flag it as a regression.
+
+The other 20 differential cases are compared exactly.
+
+#### Finding byte offsets without byte offsets
+
+html5ever reports a *line* per token, not a byte offset. To put an emoji on the
+right row the parser has to know where the text run came from, so it walks the
+original source, skipping tags and matching the source spelling of character
+references (`&amp;`) rather than the resolved text (`&`). Three bugs lived here,
+all of which produced a plausible wrong line rather than a crash:
+
+- Accumulating token lengths drifted, because a tag token's length is not its
+  serialised length. Every line number crept upward.
+- Counting `text` as bytes desynchronised the two counters on any non-ASCII
+  character, which then sliced inside a UTF-8 sequence and **panicked**. Found by
+  running the 502 real fragments, not by any test.
+- Returning where the walk ended rather than where it began put every finding
+  one line too low.
+
+A panic here matters more than it looks: it is a validator, so the one input it
+must never mishandle is the one that makes it stop.
 
 ### The ported `build`
 

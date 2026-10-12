@@ -72,6 +72,14 @@ def parse_tags_and_text(html):
     return p.tags, ''.join(p.text)
 
 
+def _write(site, rel, text):
+    """Write a file under a site directory, creating parents."""
+    path = os.path.join(site, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(text)
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix='cloner-selftest-')
     try:
@@ -421,6 +429,38 @@ def main():
                                capture_output=True, text=True)
             check('cargo build --release succeeds', r.returncode == 0,
                   (r.stdout + r.stderr)[-400:])
+            # A validator that panics is worse than one that complains: it
+            # cannot be trusted on the input it has not seen. This is a real
+            # case, not a hypothetical -- a byte-offset bug in the parser sliced
+            # inside a UTF-8 sequence and aborted, and only the 502 real
+            # fragments found it.
+            r = subprocess.run([binary, 'check', os.path.join(tmp, 'fakehome')],
+                               capture_output=True, text=True)
+            check('check on a directory with no site does not panic',
+                  'panicked' not in r.stdout + r.stderr,
+                  (r.stdout + r.stderr)[-200:])
+
+            # A site whose fragments carry multi-byte text, which is where the
+            # parser's byte offsets are exercised. Checking a directory that is
+            # not a site proves only that it reports a clean error; this proves
+            # the parser survives real content.
+            utf8_site = os.path.join(tmp, 'utf8site')
+            os.makedirs(os.path.join(utf8_site, '_build', 'content'))
+            _write(utf8_site, 'pages.toml',
+                   '[[page]]\nn = 1\nslug = "01-x"\nnav = "x"\nh1 = "X"\n'
+                   'lead = "L"\n')
+            _write(utf8_site, 'config.toml', 'name = "T"\n')
+            # No emoji: U+2600-27BF is inside the ranges the validator rejects,
+            # so a coffee cup is a finding. The point here is multi-byte text
+            # parsing, which needs nothing but non-ASCII.
+            _write(utf8_site, 'content/01.html',
+                   '<h2>café crème</h2>\n<p>über — naïve · 日本語</p>\n')
+            r = subprocess.run([binary, 'check', utf8_site, '--fragments'],
+                               capture_output=True, text=True)
+            check('multi-byte fragment parses without panicking',
+                  'panicked' not in r.stdout + r.stderr
+                  and 'BAD: none' in r.stdout,
+                  (r.stdout + r.stderr)[-300:])
         else:
             print('note: cargo not installed, skipping the Rust engine checks')
 
@@ -465,6 +505,98 @@ def main():
                       got[mismatched[0]] if mismatched else ''))
         else:
             print('note: engine binary not built, skipping the escaping differential')
+
+        # ---- the parser, diffed against the reference implementation ----
+        # Driven through the binary rather than a unit test, because that is the
+        # path the validator actually takes. A parser bug found here once passed
+        # the in-process test and still reported the wrong line from the binary.
+        if os.path.exists(binary):
+            import importlib.util as _ilu
+            _spec = _ilu.spec_from_file_location(
+                'ref_check', os.path.join(SCRIPTS, 'check_site.py'))
+            ref = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(ref)
+
+            def _ref_findings(src):
+                p = ref.P('f0')
+                p.feed(src)
+                for tag, line in p.stack:
+                    p.errors.append('f0:%d: <%s> never closed' % (line, tag))
+                if p.svg_open:
+                    p.errors.append('f0: unbalanced <svg> (%d open)' % p.svg_open)
+                seen = {}
+                for i in p.ids:
+                    seen[i] = seen.get(i, 0) + 1
+                dupes = sorted(k for k, c in seen.items() if c > 1)
+                if dupes:
+                    p.errors.append('f0: duplicate id(s) %s' % ', '.join(dupes))
+                for lg in p.langs:
+                    if lg not in ref.KNOWN_LANG:
+                        p.errors.append(
+                            'f0: unknown data-lang "%s" (add it to KNOWN_LANG in '
+                            'check_site.py)' % lg)
+                return p.errors
+
+            def _norm(lines):
+                out = []
+                for e in lines:
+                    if "emoji '" in e:
+                        e = e.replace("emoji '", 'emoji "', 1)
+                        e = e.replace("' in text", '" in text')
+                    out.append(e.replace(' in check_site.py)', ' in the engine)'))
+                return out
+
+            cases = [
+                '<h2>a</h2>\n<p>b</p>',
+                '<h2>x</h2>\n<div><b>y</p>',
+                '<h2>x</h2>\n<div><span>t',
+                '<pre class=code data-lang=dartt>x</pre>',
+                '<p id=a>1</p><p id=a>2</p>',
+                '<h2>ok</h2>\n<img src=x><br>',
+                '<div/>\n<p>a</p>',
+                '<!-- <div> unclosed -->\n<p>ok</p>',
+                '<table><tr><td><b>x</td></tr></table>',
+                '<p>no close', '</p>', '<p>a</p></p>',
+                '<svg></svg>', '<svg><g></g></svg>', '<svg><g></svg>',
+                '<h2>a</h2>\n<p>&lt;div&gt; escaped</p>\n<div>real</div>',
+                '<p>&nbsp;&mdash;&#65;</p>',
+                '<a href="#a">x</a><p id="a">y</p>',
+                '<ul><li>a<li>b</ul>',
+                '<DIV CLASS=X>upper</DIV>',
+            ]
+            payload = ''.join(c + '\n' for c in cases).encode('utf-8')
+            r = subprocess.run([binary, '__check-diff'], input=payload,
+                               capture_output=True)
+            check('parser produces findings for the malformed cases',
+                  b'unknown data-lang' in r.stdout and b'never closed' in r.stdout,
+                  'the harness produced nothing: %r' % r.stdout[:200])
+
+            # Emoji line numbers are a deliberate divergence: the reference
+            # reports the line the data run *began*, this reports the line the
+            # emoji is on. Both are checked explicitly rather than diffed,
+            # because the difference is intentional and diffing would flag it.
+            for src, want in [('<p>\ntext\nfire \U0001F389\n</p>', ':3: emoji'),
+                              ('<h2>a</h2>\n<p>\n\n\U0001F389\n</p>', ':4: emoji'),
+                              ('<h2>a</h2>\n<p>one &amp; two</p>\n<p>\U0001F389</p>',
+                               ':3: emoji')]:
+                r = subprocess.run([binary, '__check-diff'],
+                                   input=src.encode('utf-8'), capture_output=True)
+                check('emoji on %s is reported on its own line' % want,
+                      want.encode('utf-8') in r.stdout,
+                      'got %r for %r' % (r.stdout.decode()[:120], src))
+
+            # And the same cases must agree exactly on everything else.
+            disagree = []
+            for c in cases:
+                r = subprocess.run([binary, '__check-diff'],
+                                   input=(c + '\n').encode('utf-8'),
+                                   capture_output=True)
+                got = _norm([l for l in r.stdout.decode('utf-8').splitlines() if l])
+                exp = _norm(_ref_findings(c))
+                if got != exp:
+                    disagree.append((c, exp, got))
+            check('parser findings match the reference on %d cases' % len(cases),
+                  not disagree, 'first disagreement: %r' % (disagree[0] if disagree else None))
 
         # ---- the generator holds no project names ----
         gen = ' '.join(open(os.path.join(SCRIPTS, f), encoding='utf-8').read()

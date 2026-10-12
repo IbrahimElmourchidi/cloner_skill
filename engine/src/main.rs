@@ -10,7 +10,10 @@
 //! to live inside the project's `_build/` directory.
 
 mod build;
+mod check;
 mod entities;
+mod htmlparse;
+mod lang;
 mod model;
 mod util;
 
@@ -27,6 +30,11 @@ fn main() -> ExitCode {
 
     let result = match cmd {
         "build" => run_build(rest),
+        "check" => run_check(rest),
+        // Hidden: feed each line of stdin to the validator's parser and print
+        // what it finds, so the two implementations can be compared on the same
+        // inputs rather than on hand-picked cases.
+        "__check-diff" => run_check_diff(rest),
         "version" | "--version" | "-V" => {
             println!("clone-site {VERSION}");
             Ok(())
@@ -104,14 +112,44 @@ pub struct Layout {
 
 pub fn locate(site_dir: &Path) -> Result<Layout, String> {
     let nested = site_dir.join("_build");
-    let base = if nested.join("config.toml").exists() { nested.clone() } else { site_dir.to_path_buf() };
-    let root = if base == nested { site_dir.to_path_buf() } else { site_dir.to_path_buf() };
+
+    // Where the project's data and content live. The data file decides when there
+    // is one; the content directory decides when there is not.
+    //
+    // Either format is accepted. A site scaffolded by an earlier version has
+    // `config.py` and `pages.py` where this one writes TOML, and `check --pages`
+    // must still be able to validate it — that is exactly the case where you
+    // most want the tool to work. Choosing the base directory from a config file
+    // that is not there would report "no _build/content/ directory" for a site
+    // that plainly has one, which is a baffling way to learn nothing.
+    let data_in_nested = nested.join("config.toml").exists()
+        || nested.join("pages.toml").exists()
+        || nested.join("config.py").exists()
+        || nested.join("pages.py").exists();
+    let data_in_root = site_dir.join("config.toml").exists()
+        || site_dir.join("pages.toml").exists()
+        || site_dir.join("config.py").exists()
+        || site_dir.join("pages.py").exists();
+
+    let build = if data_in_nested {
+        nested
+    } else if data_in_root {
+        site_dir.to_path_buf()
+    } else if site_dir.join("content").is_dir() {
+        site_dir.to_path_buf()
+    } else {
+        // Default to the nested layout: it is what this version writes, and
+        // guessing flat when the answer is nested turns "nothing to check" into
+        // a path that does not exist.
+        nested
+    };
+
     Ok(Layout {
-        config: base.join("config.toml"),
-        pages: base.join("pages.toml"),
-        content: base.join("content"),
-        root,
-        build: base,
+        config: build.join("config.toml"),
+        pages: build.join("pages.toml"),
+        content: build.join("content"),
+        root: site_dir.to_path_buf(),
+        build,
     })
 }
 
@@ -165,5 +203,51 @@ mod tests {
         std::fs::write(dir.join("config.toml"), "name='x'").unwrap();
         let l = locate(&dir).unwrap();
         assert_eq!(l.config, dir.join("config.toml"));
+    }
+}
+fn run_check(args: &[String]) -> Result<(), String> {
+    let dir = args.first().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let mode = if args.iter().any(|a| a == "--fragments") {
+        check::Mode::FragmentsOnly
+    } else if args.iter().any(|a| a == "--pages") {
+        check::Mode::PagesOnly
+    } else {
+        check::Mode::Both
+    };
+    let layout = locate(&dir)?;
+    let report = check::run(&layout.root, &layout.build, mode)?;
+    let code = check::print(&report);
+    if code != 0 {
+        return Err(format!("{} problem(s)", report.bad.len()));
+    }
+    Ok(())
+}
+
+/// Hidden: used by tests/selftest.py to diff this validator against the Python
+/// one over generated inputs. Prints one `file:line: message` per finding.
+fn run_check_diff(_args: &[String]) -> Result<(), String> {
+    use std::io::BufRead;
+    let mut failure = None;
+    // Read to end rather than line by line. html5ever's tokenizer buffers
+    // aggressively, so it emits a single CharacterTokens token for a whole
+    // document — which means a per-line loop would feed it one giant "line" and
+    // every reported line number would be 1. Byte-exact input is also what
+    // makes this comparable to the Python parser at all.
+    let mut buf = Vec::new();
+    if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf) {
+        failure = Some(e.to_string());
+    } else {
+        match std::str::from_utf8(&buf) {
+            Ok(src) => {
+                for e in htmlparse::parse(src, "f0").errors {
+                    println!("{e}");
+                }
+            }
+            Err(e) => failure = Some(e.to_string()),
+        }
+    }
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(()),
     }
 }

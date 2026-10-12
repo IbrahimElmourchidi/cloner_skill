@@ -15,7 +15,8 @@ No framework, no build step to view it, no network. Open `index.html` from disk.
 Language-agnostic: the highlighter covers ~71 languages, file-type detection is
 extension-driven over ~90, and nothing in the generator contains a project name.
 Python 3 (standard library only) is the one runtime requirement today — a Rust
-engine is being ported to remove even that. See [`engine/README.md`](engine/README.md).
+engine is being ported to remove even that. `build` and `check` are ported and
+verified; the rest is not. See [`engine/README.md`](engine/README.md).
 
 ## Install
 
