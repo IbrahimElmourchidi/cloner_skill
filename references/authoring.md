@@ -1,11 +1,12 @@
 # Authoring a page
 
-One file, `_build/content/NN.html`, inserted verbatim into the shell. It is a
-fragment: no `<html>`, no `<head>`, no `<main>`, no `<body>`. Start with an
+One file, `_build/content/<slug>.html`, inserted verbatim into the shell. It is
+a fragment: no `<html>`, no `<head>`, no `<main>`, no `<body>`. Start with an
 `<h2>`.
 
 - [Block vocabulary](#block-vocabulary)
 - [Page shape](#page-shape)
+- [Whole files, not excerpts](#whole-files-not-excerpts)
 - [Escaping](#escaping)
 - [Diagrams](#diagrams)
 - [The purpose statement](#the-purpose-statement)
@@ -60,8 +61,15 @@ The bolded `<b class="t">` is the label. One or more `<p>` after it.
 
 ## Page shape
 
-**Code first.** A reader who came for the file should find it immediately, not
-after three paragraphs of framing.
+**Why, then code.** The `why=` section leads the body, ahead of everything.
+
+A reader who does not yet know why a file exists meets the code with no way to
+evaluate it: they can only read it and accept it. Leading with one short
+paragraph — or a diagram — in plain English is what turns a code listing into
+something they can have a judgement about.
+
+**Then code first.** A reader who came for the file should find it immediately,
+not after three paragraphs of framing.
 
 Then, in this order:
 
@@ -80,49 +88,37 @@ reading. A guide that only shows what to copy teaches half of nothing. Saying
 because it was not worth the churn for a file this size" teaches a judgement,
 which transfers.
 
-### Excerpts versus whole files
+### Whole files, not excerpts
 
-Early steps show complete files. Once a file grows past the point where
-reproducing it helps, show the relevant part — and **mark the cut**. A reader
-who cannot tell whether a block is the whole file will assume it is, and will
-be wrong about something that matters.
+**A lesson's code block is the complete file.** Every line, in the file's own
+order. A reader must be able to copy the block into a file and get exactly the
+file the lesson claims to write.
 
-Two ways to be honest, and the second is what the validator requires:
+This used to be qualified: show the whole file early, and once it grows past
+the point of usefulness show the relevant part and mark the cut. That produced
+pages where the block stopped mid-class behind a `// …` comment — on a class
+the file had declared `sealed`, so the reader's copy did not compile, and the
+four subclasses the rest of the project imports were in a sentence of prose
+instead of in the code. Marking the cut made the block honest and the lesson
+useless: an unmarked fragment reads as finished, and a marked one still is not
+a file you can use.
 
-**In the prose**, for a reader skimming:
+So the rule is not "be honest about the cut", it is "do not cut". If a file is
+too large to show in full, the answer is to **split the file**, not to excerpt
+it — see `references/splitting.md`. One lesson is one file, and the file is
+whole.
 
-```html
-<h2>The loader</h2>
-<p>The <code>load()</code> function below is the whole of
-<code>config.py</code> except for the two type aliases at the top.</p>
-```
+Two places still legitimately use an elision marker, and neither is a lesson's
+file:
 
-**In the block**, with an elision marker on a line of its own:
+- a hand-written fragment in the prose, illustrating one function;
+- a reference to a vendored or generated file you are deliberately not
+  transcribing.
 
-```
-class ConfigLoader {
-  ConfigLoader(this._root);
-
-  // ...
-}
-```
-
-Use the marker whenever the block leaves a brace open. `check_site.py` counts
-braces per `<pre class="code">` and reports any block that ends unbalanced
-without one — because an unmarked fragment is the one failure that looks
-exactly like success. A block showing a constructor and stopping reads as a
-finished class, and the page then discusses fields, getters and `props` that
-are nowhere in it.
-
-The check is deliberately crude about braces inside strings and comments: it
-strips them, so `"{"` in a Dart literal does not count. It errs towards
-reporting, because the cost of a false positive is one `// ...` line and the
-cost of a false negative is a reader's wrong conclusion.
-
-Which fix to apply is a judgement, not a rule. Sometimes the honest fix is the
-marker; sometimes it is the rest of the class, because the omitted part is the
-point of the page. The validator tells you which blocks are ambiguous. It does
-not decide what they should say.
+`check_site.py` inspects the first code block of every lesson with a `path=` and
+fails the build if it is cut short. It errs towards reporting: the cost of a
+false positive is one full-file paste, and the cost of a false negative is a
+reader whose project does not compile.
 
 ### Tables
 
@@ -226,15 +222,32 @@ Two rules that prevent most failures:
 
 ## The purpose statement
 
-`why=` in `pages.py` renders as a "Why it exists" line under the step panel.
+`why=` in `pages.py` becomes the section that **leads the lesson body**, before
+any code. The builder emits the heading; you supply the words.
 
-Write it for configuration files, abstractions, and special-purpose modules —
-anything where "what is this" is obvious from the code but "why is this here"
-is not. Not every step needs one; a step that writes a data table does not.
+**Every lesson that writes a file needs one.** It was optional, and optional
+meant absent: on a 511-lesson site every entry carried a purpose statement,
+`why.py` existed to hold them, and not one reached a page — the field was never
+required and nothing reported it missing. A stored-but-unrendered field is worse
+than an absent one, because it looks like the work was done.
 
-Write it in terms of the constraint the file removes, not the thing it holds.
+Write it in very simple English, because it is the answer to a question the
+reader has *before* the code: why does this file exist, what problem does it
+solve, what breaks without it. Short sentences. No class names used as their own
+explanation. If the idea is spatial or structural — a type hierarchy, a data
+flow, a request lifecycle — a small diagram is worth more than the paragraph,
+and `why=` accepts markup, so a `<figure class="diagram">` goes straight in.
 
-> Holds the database URL. *(Restates the filename.)*
+`why=None` is the explicit opt-out, and it exists to keep two different facts
+apart: a **missing** key means "not written yet" and is reported; `None` means
+"deliberately not applicable" and is not. A step that only runs a command — a
+code generator, `flutter pub get` — writes no file and is the normal case.
+
+The one thing to avoid is restating the filename. What the file *is* is
+obvious from the code in the second line of the page; what it *is for* is not,
+and that is the whole value of the section.
+
+> Holds the database URL. *(Restates the filename. Useless.)*
 
 > …it is the one file in this project that cannot be reconstructed from the
 > repository, because the value is secret. Everything else can be re-derived by
@@ -253,5 +266,5 @@ These are checked mechanically, so you will hit them:
 | `anchor #foo does not resolve` | An `href="#foo"` with no matching `id`. Check it on the built page, not the fragment — fragments are validated without the shell. |
 | `emoji '…' in text` | Remove it. |
 | `duplicate id(s)` | Two elements with the same `id` on one page. |
-| `pages.py declares a page with no fragment` | You added a `PAGES` entry without creating `content/NN.html`. |
-| `content/NN.html has no matching entry in pages.py` | A leftover fragment from a renamed or deleted lesson. |
+| `pages.py declares a page with no fragment` | You added a `PAGES` entry without creating the fragment named after its slug. |
+| `content/<slug>.html has no matching entry in pages.py` | A leftover fragment from a renamed or deleted lesson. |

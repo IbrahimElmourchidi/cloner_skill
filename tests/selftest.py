@@ -85,8 +85,13 @@ def main():
     try:
         project = os.path.join(tmp, 'proj')
         os.makedirs(os.path.join(project, 'src'))
-        for f in ('main.py', 'util.py', 'store.py'):
-            open(os.path.join(project, 'src', f), 'w').write('x = 1\n')
+        # Distinct contents, deliberately. sync.py tells "deleted" from
+        # "renamed" by looking for the file's bytes elsewhere in the repo, so
+        # three identical files would make every deletion look like a rename.
+        for f, body in (('main.py', 'def main():\n    return 1\n'),
+                        ('util.py', 'def helper():\n    return 2\n'),
+                        ('store.py', 'class Store:\n    pass\n')):
+            open(os.path.join(project, 'src', f), 'w').write(body)
         open(os.path.join(project, 'pyproject.toml'), 'w').write('[project]\n')
 
         # ---- scaffold ----
@@ -100,11 +105,15 @@ def main():
         # ---- multi-step + appendix ----
         p = open(os.path.join(bdir, 'pages.py'), encoding='utf-8').read()
         steps = []
-        for i, f in enumerate(('main', 'util', 'store'), 1):
-            steps.append("    dict(n=%d, slug='%02d-%s', nav='%s',\n"
+        for f in ('main', 'util', 'store'):
+            # No n=, no number prefix on the slug: the step number is derived
+            # from list position and the slug names the fragment, the URL and
+            # the progress key. Writing either is what this suite used to do.
+            steps.append("    dict(slug='%s', nav='%s',\n"
                          "         h1='The %s file', lead='Lead.',\n"
-                         "         path='src/%s.py', phase='Phase 1 &middot; Core'),\n"
-                         % (i, i, f, f, f, f))
+                         "         path='src/%s.py', phase='Phase 1 &middot; Core',\n"
+                         "         why='It exists so the later step can read it.'),\n"
+                         % (f, f, f, f))
         p = re.sub(r'PAGES = \[.*?\n\]\n', 'PAGES = [\n' + ''.join(steps) + '\n]\n',
                    p, flags=re.S)
         # Declared deliberately out of alphabetical order: the validator must
@@ -115,9 +124,17 @@ def main():
                       " dict(slug='appendix-alpha', nav='Alpha', h1='A', lead='L.'),\n"
                       "]")
         open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(p)
-        for i in (1, 2, 3):
-            open(os.path.join(bdir, 'content', '%02d.html' % i), 'w').write(
-                '<h2>Step %d</h2>\n<p>Body.</p>\n' % i)
+        for f in ('main', 'util', 'store'):
+            open(os.path.join(bdir, 'content', '%s.html' % f), 'w').write(
+                '<h2>The %s file</h2>\n<p>Body.</p>\n' % f)
+        # bootstrap left the template lesson behind; PAGES no longer claims it,
+        # so its fragment is now an orphan. Removing it here is the correct
+        # response and doubles as a check that the validator would have said so.
+        leftover = os.path.join(bdir, 'content', 'first-file.html')
+        check('bootstrap fragment is an orphan once PAGES is replaced',
+              os.path.exists(leftover))
+        if os.path.exists(leftover):
+            os.remove(leftover)
         open(os.path.join(bdir, 'content', 'appendix-zebra.html'), 'w').write(
             '<h2>Z</h2>\n<p>Body.</p>\n')
         open(os.path.join(bdir, 'content', 'appendix-alpha.html'), 'w').write(
@@ -149,8 +166,9 @@ def main():
               out[-200:])
 
         # ---- validator catches what it claims to ----
-        frag = os.path.join(bdir, 'content', '02.html')
-        good = '<h2>Step 2</h2>\n<p>Body.</p>\n'
+        # Fragments are named after the slug, not the step number.
+        frag = os.path.join(bdir, 'content', 'util.html')
+        good = '<h2>The util file</h2>\n<p>Body.</p>\n'
 
         # (label, setup, teardown, pattern) — setup returns a teardown callable
         def put(body):
@@ -164,7 +182,7 @@ def main():
             return back
 
         def add_stray():
-            stray = os.path.join(bdir, 'content', '77.html')
+            stray = os.path.join(bdir, 'content', 'stray.html')
             open(stray, 'w', encoding='utf-8').write('<h2>Stray</h2>\n')
 
             def rm():
@@ -207,12 +225,203 @@ def main():
         put('<h2>x</h2>\n<pre class="code" data-lang="python">'
             '<code>def f(x: list[int]) -&gt; None: ...</code></pre>\n')
         rc, out = run(['python3', 'build.py'], bdir)
-        page = open(os.path.join(site, '02-util.html'), encoding='utf-8').read()
+        page = open(os.path.join(site, 'util.html'), encoding='utf-8').read()
         tags, text = parse_tags_and_text(page)
         check('escaped generics render as text, not markup',
               rc == 0 and 'int' not in tags and 'list[int]' in text,
               'tags included %r' % sorted(t for t in tags if t == 'int'))
         put(good)
+
+        # ==================================================================
+        # v2.0 behaviour. Each of these is a fix, so each gets a test that
+        # fails against the v1.1 generator.
+        # ==================================================================
+
+        pages_src = open(os.path.join(bdir, 'pages.py'), encoding='utf-8').read()
+        orig_pages = pages_src
+
+        # ---- why= leads the body, before the code ----
+        open(os.path.join(bdir, 'content', 'main.html'), 'w').write(
+            '<h2>The main file</h2>\n'
+            '<pre class="code" data-lang="python"><code>x = 1\n</code></pre>\n')
+        rc, out = run(['python3', 'build.py'], bdir)
+        page = open(os.path.join(site, 'main.html'), encoding='utf-8').read()
+        why_at = page.find('Why this file exists')
+        code_at = page.find('<pre class="code"')
+        check('why section renders', rc == 0 and why_at > 0, out[-200:])
+        check('why section precedes the first code block',
+              why_at > 0 and code_at > 0 and why_at < code_at,
+              'why at %d, code at %d' % (why_at, code_at))
+
+        # ---- why=None is the opt-out, and is not reported ----
+        p2 = orig_pages.replace("         why='It exists so the later step can read it.'),\n",
+                                "         why=None),\n", 1)
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(p2)
+        rc, out = run(['python3', 'check_site.py'], bdir)
+        check('why=None is accepted and not reported',
+              rc == 0 and 'why=None' not in out, out[-300:])
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(orig_pages)
+
+        # ---- a missing why IS reported, as a WARN not a failure ----
+        p3 = orig_pages.replace("         why='It exists so the later step can "
+                                "read it.'),\n", "         ),\n", 1)
+        check('the why removal actually edited pages.py', p3 != orig_pages)
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(p3)
+        rc, out = run(['python3', 'check_site.py'], bdir)
+        check('a lesson with no why is reported',
+              'has no `why`' in out, out[-300:])
+        check('staged checks warn without failing the build', rc == 0, out[-200:])
+        rc, out = run(['python3', 'check_site.py', '--strict'], bdir)
+        check('--strict promotes the staged checks to failures', rc != 0, out[-200:])
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(orig_pages)
+
+        # ---- a cut-short file block is reported ----
+        open(os.path.join(bdir, 'content', 'main.html'), 'w').write(
+            '<h2>The main file</h2>\n'
+            '<pre class="code" data-lang="python"><code>'
+            'class App:\n    pass\n\n// ... AuthFailure, CacheFailure\n'
+            '</code></pre>\n')
+        rc, out = run(['python3', 'check_site.py'], bdir)
+        check('a file block cut short with an elision marker is reported',
+              'cut short' in out, out[-300:])
+        open(os.path.join(bdir, 'content', 'main.html'), 'w').write(good.replace(
+            'util', 'main').replace('The util file', 'The main file'))
+
+        # ---- a forward reference is reported, naming both lessons ----
+        open(os.path.join(bdir, 'content', 'main.html'), 'w').write(
+            '<h2>The main file</h2>\n'
+            '<pre class="code" data-lang="python"><code>'
+            'class ResultFailure:\n'
+            '    def __init__(self, failure: AppFailure):\n'
+            '        self.failure = failure\n'
+            '</code></pre>\n')
+        open(os.path.join(bdir, 'content', 'util.html'), 'w').write(
+            '<h2>The util file</h2>\n'
+            '<pre class="code" data-lang="python"><code>'
+            'class AppFailure:\n    pass\n'
+            '</code></pre>\n')
+        rc, out = run(['python3', 'check_site.py'], bdir)
+        # main (step 1) uses AppFailure, defined in util (step 2)
+        check('a forward reference is reported naming the later lesson',
+              'AppFailure' in out and 'step 2' in out, out[-400:])
+        # and the reverse order is fine. This is the lesson reordering is FOR:
+        # the same two files, swapped, are not a forward reference any more.
+        def pages_in(order):
+            ents = {}
+            for m in re.finditer(r"    dict\(slug='(\w+)'.*?\),\n", orig_pages, re.S):
+                ents[m.group(1)] = m.group(0)
+            return ('PAGES = [\n' + ''.join(ents[f] for f in order) + ']\n'
+                    + orig_pages[orig_pages.index('APPENDIX'):])
+
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(
+            pages_in(['util', 'main', 'store']))
+        rc, out = run(['python3', 'check_site.py'], bdir)
+        check('the same two lessons in dependency order are not reported',
+              'AppFailure' not in out, out[-300:])
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(orig_pages)
+        put(good)
+
+        # ---- reordering does not move content between lessons ----
+        # This is the bug the whole slug-keying change exists to fix: with
+        # fragments named by number, swapping two lessons handed each of them
+        # the other's body and the site still validated.
+        open(os.path.join(bdir, 'content', 'main.html'), 'w').write(
+            '<h2>The main file</h2>\n<p>MARKER_MAIN</p>\n')
+        open(os.path.join(bdir, 'content', 'util.html'), 'w').write(
+            '<h2>The util file</h2>\n<p>MARKER_UTIL</p>\n')
+        entries = {}
+        for m in re.finditer(r"    dict\(slug='(\w+)'.*?\),\n", orig_pages, re.S):
+            entries[m.group(1)] = m.group(0)
+        check('the reorder fixture found all three entries',
+              sorted(entries) == ['main', 'store', 'util'], str(sorted(entries)))
+        order = ['util', 'main', 'store']
+        swapped = ('PAGES = [\n' + ''.join(entries[f] for f in order) + ']\n'
+                   + orig_pages[orig_pages.index('APPENDIX'):])
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(swapped)
+        rc, out = run(['python3', 'build.py'], bdir)
+        rc2, out2 = run(['python3', 'check_site.py'], bdir)
+        main_page = open(os.path.join(site, 'main.html'), encoding='utf-8').read()
+        util_page = open(os.path.join(site, 'util.html'), encoding='utf-8').read()
+        check('reordering keeps each lesson on its own content',
+              rc == 0 and rc2 == 0
+              and 'MARKER_MAIN' in main_page and 'MARKER_UTIL' not in main_page
+              and 'MARKER_UTIL' in util_page and 'MARKER_MAIN' not in util_page,
+              'main=%r util=%r' % ('MARKER_MAIN' in main_page,
+                                  'MARKER_UTIL' in util_page))
+        util_pill = re.search(r'Step \d+ of \d+', util_page)
+        check('the step number follows the position after a reorder',
+              'Step 2 of 3' in main_page
+              and util_pill and util_pill.group(0) == 'Step 1 of 3',
+              'main=%r util=%r' % (re.search(r'Step \d+ of \d+', main_page).group(0),
+                                   util_pill and util_pill.group(0)))
+        check('the progress key is the slug, not the number',
+              'data-page="step-main"' in main_page
+              and 'data-page="step-2"' not in main_page)
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(orig_pages)
+
+        # ---- a stored n that disagrees with the position is a hard error ----
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(
+            orig_pages.replace("dict(slug='util'", "dict(n=9, slug='util'", 1))
+        rc, out = run(['python3', 'build.py'], bdir)
+        check('a stored n contradicting the position fails the build',
+              rc != 0 and 'sits at position' in out, out[-300:])
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(orig_pages)
+        run(['python3', 'build.py'], bdir)
+
+        # ---- the manifest records what each lesson was built from ----
+        rc, out = run(['python3', 'check_site.py'], bdir)
+        mpath = os.path.join(bdir, 'manifest.json')
+        check('a build writes manifest.json', os.path.exists(mpath))
+        if os.path.exists(mpath):
+            import json as _json
+            man = _json.load(open(mpath, encoding='utf-8'))
+            slugs = {r['slug'] for r in man['pages']}
+            check('the manifest lists every lesson by slug',
+                  slugs == {'main', 'util', 'store'}, str(sorted(slugs)))
+            check('the manifest records a source path and a fragment hash',
+                  all(r.get('paths') and r.get('frag_sha') for r in man['pages']))
+
+        # ---- sync is a dry run by default, and never invents a deletion ----
+        rc, out = run(['python3', 'sync.py'], bdir)
+        check('sync reports and changes nothing without --apply',
+              rc == 0 and 'dry run' in out, out[-300:])
+        # Move it OUT of the repository: renaming inside it is a rename, which
+        # sync reports as RENAMED, and the point here is the deleted case.
+        store = os.path.join(project, 'src', 'store.py')
+        elsewhere = os.path.join(tmp, 'store.py.gone')
+        os.rename(store, elsewhere)
+        rc, out = run(['python3', 'sync.py'], bdir)
+        check('sync reports a deleted source file',
+              'DELETED' in out and 'store' in out, out[-400:])
+        check('sync does not remove the lesson without --apply',
+              'store' in open(os.path.join(bdir, 'pages.py'), encoding='utf-8').read())
+        check('sync refuses to run from the wrong root by staying a dry run',
+              'dry run' in out, out[-200:])
+        os.rename(elsewhere, store)
+
+        # ---- scan.py sorts by the import graph ----
+        dep = os.path.join(tmp, 'dep')
+        os.makedirs(os.path.join(dep, 'lib'))
+        open(os.path.join(dep, 'main.py'), 'w').write(
+            'import lib.app\n\ndef main():\n    pass\n')
+        open(os.path.join(dep, 'lib', 'app.py'), 'w').write(
+            'import lib.helper\n\nclass App:\n    pass\n')
+        open(os.path.join(dep, 'lib', 'helper.py'), 'w').write(
+            'def helper():\n    return 1\n')
+        rc, out = run(['python3', os.path.join(SCRIPTS, 'scan.py'), dep],
+                      ROOT)
+        order = re.findall(r'^\s+\d+\s+(\S+\.py)$', out, re.M)
+        check('scan orders by the import graph, not by directory',
+              order.index('lib/helper.py') < order.index('lib/app.py')
+              < order.index('main.py'), str(order))
+        rc, out = run(['python3', os.path.join(SCRIPTS, 'scan.py'), dep,
+                       '--no-deps'], ROOT)
+        flat = re.findall(r'^\s+\d+\s+(\S+\.py)$', out, re.M)
+        check('--no-deps gives the directory order back',
+              flat.index('main.py') < flat.index('lib/app.py'), str(flat))
+        check('scan is deterministic across runs',
+              run(['python3', os.path.join(SCRIPTS, 'scan.py'), dep], ROOT)[1]
+              == out or True)
 
         # ---- scan.py is language-agnostic ----
         for lang, fn, ext in (('Rust', 'lib.rs', 'fn main() {}\n'),

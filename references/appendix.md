@@ -48,7 +48,7 @@ user cut. Nine good pages beat twenty-one nobody wanted.
 
 ## Then write
 
-Each appendix entry in `pages.toml`:
+Each appendix entry in `pages.py`:
 
 ```python
 APPENDIX = [

@@ -11,9 +11,9 @@ description: >
   up the multi-page docs site that lives at docs/site — even if they never say
   "site", "skill", or "generator", and even if the project is not the one this
   skill was last used on.
-version: 1.1.0
+version: 2.0.0
 user-invocable: true
-argument-hint: "[init|scan|plan|build|render|appendix|check|split|renumber|next]"
+argument-hint: "[init|scan|plan|sync|build|render|appendix|check|split|renumber|next]"
 license: MIT
 ---
 
@@ -66,11 +66,43 @@ without asking. Something like `// lib/core/config/env.dart — hand written`.
 </path_header>
 
 <code_first>
-Code first, then the assessment. A page that is only a file dump teaches
-nothing. Each page carries: the file, how it works, an honest verdict on whether
+Why first, then the code, then the assessment. A page that is only a file dump
+teaches nothing. Each page carries: why the file exists, in plain English and
+before any code; the file, whole; how it works; an honest verdict on whether
 its choices are good (`Best practice` / `Debatable` / `Avoid`), what breaks if
 you get it wrong, and what you would have done differently.
 </code_first>
+
+<whole_file>
+A lesson's code block is the **complete file**, every line, in its own order. A
+reader must be able to copy the block into a file and get exactly the file the
+lesson claims to write. Never trim it, never replace part of it with a `// ...`
+comment, and never show a path manifest where the code should be.
+
+Marking the cut is not the fix. An unmarked fragment reads as a finished file;
+a marked one still is not a file the reader can use, and on a `sealed` class the
+missing subclasses are ones the rest of the project imports. If a file is too
+large to show, **split the file**. The elision marker survives only inside
+hand-written prose fragments, never in the block that carries a lesson's file.
+</whole_file>
+
+<why_first>
+Every lesson that writes a file opens with why it exists — what problem it
+solves, what breaks without it — in very simple English, before any code. Set
+`why=` in pages.py; the builder emits the heading and the section.
+
+It used to be optional, and optional meant absent: on a 511-lesson site every
+entry carried a purpose statement and not one reached a page. A stored-but-
+unrendered field is worse than an absent one, because it looks like the work was
+done. Use `why=None` — and only that — for a step that writes no file.
+</why_first>
+
+<forward_reference>
+No lesson may use a name that a later lesson defines. A reader follows the order
+and writes each file as they go, so a step referencing a class introduced three
+steps later cannot be completed — the code does not compile at the point they are
+told to write it. `check_site.py` names both lessons when this happens.
+</forward_reference>
 
 <refer_by_role>
 Refer to another lesson by what it does — "the routing lesson", "the config
@@ -107,15 +139,18 @@ invariants above apply to all of them.
 - **`init`** — run the scaffolder, then report the site path and what was
   written. Do not begin planning lessons; that is `plan`.
 - **`scan`** — run `scan.py` on the argument (or the current project), report the
-  inventory, and stop. Do not write `pages.toml`.
-- **`plan`** — read the project properly, design the phases, write `pages.toml`,
+  inventory, and stop. Do not write `pages.py`.
+- **`sync`** — run `sync.py` to compare the site against the repository, report
+  what moved, and act only with `--apply`. See
+  [Keeping the site honest](#keeping-the-site-honest).
+- **`plan`** — read the project properly, design the phases, write `pages.py`,
   then **present the plan and stop.** See [Plan first, then batch](#plan-first-then-batch).
   With `--context "..."`, treat that text as a standing instruction for the whole
   build — audience, depth, what to skip, what to emphasise — and hold it for
   every later command too. It is not just for the plan; see
   [Passing context](#passing-context).
 - **`build`** — take the batch size from the argument, or **10** if there is no
-  number. Author that many lessons, write each to `content/NN.html`, render,
+  number. Author that many lessons, write each to its slug-named fragment, render,
   validate, then **stop** and report. Ask whether to continue; never exceed the
   agreed batch without asking, because "keep going" is a new agreement rather
   than an extension of the last one. See [3. Author and build](#3-author-and-build).
@@ -152,7 +187,7 @@ validator for "this page is less careful than the previous one." So the work is
 batched, and the batch size is the user's call.
 
 1. **Read the project.** Run `scan`, read the actual code, design the phases.
-   Write `pages.toml`. If `--context` was given, read it first and hold it for
+   Write `pages.py`. If `--context` was given, read it first and hold it for
    every later command — see [Passing context](#passing-context).
 2. **Present the plan and stop.** Phases, lesson count, ordering rationale, and
    anything you are unsure about — files that look generated, a module whose role
@@ -212,8 +247,9 @@ Invoked as `/clone-site COMMAND`. Optional argument narrows the target.
 | Command | Argument | Does | Go to |
 |---|---|---|---|
 | `init` | project path | Scaffold a site: copy the generator in, write the config, build, validate. | [below](#commands) |
-| `scan` | project path | Inventory the repo and draft a step order. | [step 1](#1-inventory-the-project) |
-| `plan` | project path, `--context "…"` | Read the project, design the phases, write `pages.toml`, present the plan. | [step 2](#2-design-the-curriculum) |
+| `scan` | project path | Inventory the repo and draft a step order from the real import graph. | [step 1](#1-inventory-the-project) |
+| `plan` | project path, `--context "…"` | Read the project, design the phases, write `pages.py`, present the plan. | [step 2](#2-design-the-curriculum) |
+| `sync` | site path | Compare the site against the repository; act on what moved. | [Keeping the site honest](#keeping-the-site-honest) |
 | `appendix` | topic, or none | Propose the appendix topics, then write them. | `references/appendix.md` |
 | `build` | batch size, default 10 | Author that many lessons, write them to disk, render, validate, then stop and ask. | [step 3](#3-author-and-build) |
 | `render` | — | Render every page and validate, changing no content. | [step 4](#4-render-and-validate) |
@@ -298,15 +334,18 @@ docs/site/
 ├── index.html              overview + full table of contents   (generated)
 ├── assets/style.css        the design system                   (copied)
 ├── assets/app.js           highlighting, read-tracking         (copied)
-├── NNN-slug.html           one per lesson                      (generated)
+├── <slug>.html             one per lesson                      (generated)
 └── _build/
     ├── build.py            renderer                            (copied)
     ├── index.py            generates index.html                (copied)
     ├── check_site.py       structural validator                (copied)
     ├── check_svg.py        SVG geometry linter                 (copied)
+    ├── menu.py             the sidebar's shape                 (copied)
+    ├── sync.py             compare site against repository     (copied)
     ├── config.py           ← site-specific prose
     ├── pages.py            ← what exists, in what order
-    └── content/NN.html     ← one fragment per lesson
+    ├── manifest.json       ← what each lesson was built from   (generated)
+    └── content/<slug>.html ← one fragment per lesson
 ```
 
 `config.py` and `pages.py` are yours to edit. Everything else is copied verbatim
@@ -325,9 +364,16 @@ python3 $SKILL/scripts/scan.py ~/code/my-project --json     # machine-readable
 python3 $SKILL/scripts/scan.py ~/code/my-project --write    # pages.py draft
 ```
 
-The draft order is sorted by directory, then by file size. That is a serviceable
-default and a *poor* dependency order — it cannot see that one module imports
-another. Treat it as a shape to argue with.
+The draft is sorted by the **real import graph**: it reads the import lines,
+builds the graph over the files it is teaching, and topologically sorts them, so
+a module comes after everything it depends on. Where two files have no
+dependency between them the tie-break is directory, then size, so two scans of
+an unchanged repository produce the same list. Pass `--no-deps` to see the raw
+directory order — useful precisely because it is what you are arguing against.
+
+The sort knows that `b.py` imports `a.py`. It does not know that a reader needs
+the domain before the wiring, or that a file does not deserve a lesson at all.
+Read the result and argue with it.
 
 Useful flags: `--skip DIR` replaces the built-in skip list, `--include docs`
 re-enables a directory skipped by default (docs output is skipped by default, so
@@ -345,21 +391,29 @@ step, and what to do about generated files, lockfiles and assets.
 Each entry:
 
 ```python
-dict(n=1, slug='01-pubspec', nav='the manifest',
+dict(slug='pubspec', nav='the manifest',
      h1='What the project declares',
      lead='One or two sentences that make the reader want to keep going.',
      path='pubspec.yaml',
      cmd='$ flutter create .',
      phase='Phase 0 &middot; Toolchain',
-     why='Why this file exists, in a sentence. Not "what it is" — the code '
-          'already says that — but what constraint it removes.'),
+     why='Why this file exists, in plain English — the section that leads the '
+         'page. Inserted raw, so it may hold a <figure class="diagram"> too.'),
 ```
 
-`n`, `slug`, `nav`, `h1`, `lead` are required. The filename is the slug plus `.html`, and
-reading order is recovered from the numeric prefix, so **the slug must start with
-the zero-padded number**. `why` is worth writing for any configuration file,
-abstraction, or special-purpose module: "what is this" is obvious from the code,
-"why is this here" is not.
+`slug`, `nav`, `h1`, `lead` are required. **The order of the list is the reading
+order** — there is no `n` field, because the step number is derived from the
+position and an entry that still declares an `n` contradicting its position is
+a hard error naming both. To insert, move or delete a lesson, move the entry.
+
+`slug` names three things at once: the content fragment, the page URL, and the
+reader's saved-progress key. It must never start with the step number, and it
+must never change for a lesson you only renumbered — that is what makes
+reordering free.
+
+`why` is **required** on any lesson that writes a file, and `why=None` is the
+explicit opt-out for a step that writes none. "Not written yet" and "does not
+apply" are different facts and the field keeps them apart.
 
 ### 3. Author and build
 
@@ -368,7 +422,7 @@ validates. One command because the two halves are not separable in practice: a
 lesson that has been written but not rendered cannot be validated, and the
 validator is what tells you the fragment is broken.
 
-One fragment per lesson, `content/07.html`, inserted verbatim into the shell.
+One fragment per lesson, named after its slug, inserted verbatim into the shell.
 
 ```bash
 /clone-site build 10     # author 10, write, render, validate, then ask
@@ -411,11 +465,53 @@ lesson leaves no orphan HTML behind.
 ## Adding a lesson later
 
 1. Append a `dict(...)` to `PAGES` in `pages.py`.
-2. Create `content/NN.html` (zero-padded to two digits).
+2. Create the content fragment named after that slug.
 3. Build and validate.
 
-Inserting in the *middle* means renumbering every later `n` and every
-cross-reference by hand. Avoid it — see the `<refer_by_role>` invariant above.
+Inserting in the *middle* is a **move within the list**. Nothing else changes —
+not the step numbers, not the fragment names, not the URLs, and not any
+reader's saved progress. That used to require renumbering every later `n` and
+every cross-reference by hand; see `references/renumbering.md` for what that
+used to cost.
+
+Keep slugs stable. A slug is the fragment's filename, the page URL and the
+progress key all at once, so renaming one to match a new step number undoes all
+three at the same time.
+
+---
+
+## Keeping the site honest
+
+A site is not a one-shot export. The repository keeps moving after the lessons
+are written, and `sync` is how the two are brought back together:
+
+```bash
+clone-site sync                    # dry run; changes nothing
+clone-site sync --apply            # act on the safe cases
+clone-site sync --apply --yes      # and do not stop to ask
+```
+
+Each build writes `_build/manifest.json` recording, per lesson, the source path
+it teaches and a hash of both the source file and the fragment. Without it there
+is no way to know whether anything moved — staleness was not merely unchecked,
+it was unanswerable.
+
+`sync` reports five cases, and the difference between the last two is the whole
+point:
+
+| Case | What it means | What `--apply` does |
+|---|---|---|
+| `ADDED` | A source file with no lesson. | Nothing. Authoring a lesson means reading the repository and deciding what a reader needs — that is not a string operation. |
+| `MODIFIED` | The file changed since the last build. | Nothing. The prose around the code is about that code. Re-author it. |
+| `RENAMED` | The path moved, the contents are identical. | Updates `path=`. The lesson is about contents, not filenames. |
+| `DELETED` | The file is gone **and** its contents appear nowhere in the repository. | Removes the entry, the fragment and the generated HTML. Provable, so it is applied. |
+| `ORPHANED` | The file is gone but its contents were never seen in the repository. | **Nothing.** It may have moved outside the scan root, or been hand-added and never have existed. |
+
+That last row is why the run is a dry run by default and asks before deleting.
+Auto-removing a lesson on an inference is how one misconfigured `--root` takes
+half a site with it, so the unprovable case is reported and left for a human.
+
+After a `--apply`, re-run `render`.
 
 ---
 
@@ -446,11 +542,14 @@ It does not generate lessons. `scan.py` gives you an inventory and a starting
 order; deciding what the steps *are* means reading the repository, and a
 generated lesson list nobody checked is worse than none. Reading the project,
 arguing about the order, and writing the assessment — that is the part that
-carries the value, and it is the part you do.
+carries the value, and it is the part you do. `sync.py` is the same principle in
+the other direction: it reports that a file moved, and does not rewrite the page
+about it.
 
 It also does not invent content. Every claim on a page should be traceable to a
 file in the repository. `config.py`'s `source_root` is asserted in the footer of
-every page, so set it to the repository the lessons were actually read from.
+every page and is what `sync.py` compares against, so set it to the repository
+the lessons were actually read from.
 
 ---
 
@@ -465,7 +564,11 @@ self-deleting block at the top of this file:
 BEFORE doing any work, run the migration below. Then delete this entire
 section from THIS file so it does not run again until the next update.
 
-    python3 .agents/skills/clone-site/scripts/migrate.py v1.0-to-v1.1
+    python3 ~/.agents/skills/clone-site/scripts/migrate.py docs/site --to v1.1-to-v2.0 --apply
+
+It is a dry run without --apply. It renames fragments from their number to
+their slug, drops the now-derived n= field, writes .bak beside anything it
+rewrites, and reports anything it will not touch.
 </post-update-cleanup>
 ```
 
@@ -475,4 +578,7 @@ there is a real migration.** An always-present block that finds nothing to do is
 noise that trains people to skip it.
 
 The pending migration, when the Rust port lands, is `config.py` / `pages.py` →
-`config.toml` / `pages.toml`.
+`config.toml` / `pages.toml`. The `sync.py`, `migrate.py` and `menu.py` paths
+added in v2.0 must exist there too, or `bootstrap.py` will scaffold a site whose
+generator is missing half of itself — which is what happened with `menu.py` in
+v1.1.

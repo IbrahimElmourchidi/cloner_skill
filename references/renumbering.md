@@ -3,6 +3,15 @@
 Use when inserting, deleting, or splitting changes how many steps there are, so
 every later step number and every cross-reference shifts.
 
+> **Most of this file no longer applies.** Since v2.0 there is no `n` field to
+> renumber: the step number is derived from the position in `PAGES`, and the slug
+> does not track it. Inserting, moving or deleting a lesson is a move within that
+> list and nothing else — no mapping to compute, no slug prefixes to update, and
+> `check_site.py` takes reading order from `pages.py` rather than from filenames.
+>
+> What survives is the part that was always the hard part: **numbers written in
+> prose.** That is what this file is now for.
+
 > **Never rewrite numbers by replacing every integer in the document.** On a
 > 492-lesson site, `<td>16</td>` was a pixel width and `<td>8</td>` was an item
 > count. Both became step numbers and ~150 pages were corrupted in one pass. This
@@ -14,7 +23,7 @@ every later step number and every cross-reference shifts.
 A number is only a step number **if something asserts it is**. Find what asserts
 it, and change only those things.
 
-## 1. Write down the shift
+## 1. Prefer not to reference steps at all
 
 Before touching anything, produce the mapping explicitly:
 
@@ -25,22 +34,25 @@ old n  ->  new n
 Splitting step 16 into three steps means every step from 17 up gains two. Say so
 in one place and refer back to it.
 
-## 2. Renumber `pages.toml` only
+## 2. Write down the shift
 
-The lesson list is the authority. Walk it in order and reassign `n` so it is
-contiguous from 1, then update each `slug`'s numeric prefix to match.
+Before touching anything, produce the mapping explicitly:
 
-Two things to get right:
+```
+old n  ->  new n
+```
 
-- The slug prefix must track `n`. Reading order is recovered from the filename, so
-  a slug that does not move with its number silently reorders the sidebar.
-- **Nothing else lives in `pages.toml`.** If you find a purpose statement or a
-  hand-edited line in there, it is being lost on the next rebuild — move it to a
-  file that is not regenerated before you lose it.
+Splitting step 16 into three steps means every step from 17 up gains two. Say so
+in one place and refer back to it. Nothing in `pages.py` needs this map any
+more — it is for the prose below.
+
+**`pages.py` itself needs nothing.** There is no `n` field to reassign and the
+slug does not track the number. To move or delete a lesson, move or delete its
+entry in the list and rebuild.
 
 ## 3. Find cross-references and classify them
 
-Cross-references live in page bodies and in `pages.toml`'s `lead`/`why` fields.
+Cross-references live in page bodies, and in `pages.py`'s `lead` and `why` fields.
 For each candidate, decide which of three it is:
 
 | Looks like | Actually is | Action |
@@ -68,8 +80,8 @@ If that assertion fails, you are looking at the wrong cell. Do not proceed.
 ## 4. Do not touch the HTML's numeric attributes
 
 Widths, grid columns, font sizes, and viewBox coordinates are numbers too. Leave
-them alone entirely — the only files you should edit are `pages.toml` and the
-lesson fragments' *prose*.
+them alone entirely — the only thing you should edit is the lesson fragments'
+prose.
 
 ## 5. Resolve generated output, not the source
 
@@ -86,8 +98,8 @@ python3 build.py && python3 index.py
 python3 check_site.py        # prev/next chains are the real check
 ```
 
-`check_site.py` re-derives reading order from the filenames and compares it to
-the declared order, so a missed shift shows up as a prev/next mismatch. It will
+`check_site.py` re-derives reading order from `pages.py` and compares it to what
+was built, so a mismatch shows up as a prev/next error. It will
 not catch a prose cross-reference that now names the wrong lesson — only reading
 will.
 

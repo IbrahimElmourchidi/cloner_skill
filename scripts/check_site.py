@@ -16,11 +16,12 @@ Two things here exist because of how this validator used to behave:
 2. Content fragments are validated BEFORE the built pages. A fragment is
    inserted verbatim into the shell, so an unbalanced fragment is guaranteed
    to cascade into the rendered page. Checking it first means a typo in
-   `_build/content/17.html` fails as one clear message instead of a
+   `_build/content/<slug>.html` fails as one clear message instead of a
    same-shaped page plus a dozen lookalikes downstream.
 
-Checks: tag balance, duplicate ids, link targets, in-page anchors, prev/next
-agrees with the reading order, data-lang is known, no emoji, every table row
+Checks: tag balance, no heading directly inside a list, duplicate ids, link
+targets, in-page anchors, prev/next agrees with the reading order, the sidebar's
+numbers agree with the step order, data-lang is known, no emoji, every table row
 has the cell count its header declares, a code block is not truncated without
 saying so, a code block is not an empty container holding only its own path
 header, and no fragment is empty at all.
@@ -76,6 +77,16 @@ KNOWN_LANG = {
 }
 
 EMOJI = re.compile('[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F000-\U0001F02F]')
+
+# A list may only contain <li> (plus a couple of inert exceptions). A heading
+# written straight into one is invalid HTML, and the sidebar used to do exactly
+# that: it injected `<h4>` between `<li>` elements to label each phase. It looked
+# right because the CSS set `list-style:none`, which hides the symptom — the
+# bullets a strict parser objects to — while the fault is real. Assistive
+# technology is handed a broken list. Groups now render as <details>, so a
+# heading can only reappear here if someone hand-writes one into the markup.
+HEADINGS = {'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}
+LIST_TAGS = {'ol', 'ul'}
 
 
 def _span(attrs):
@@ -176,6 +187,10 @@ class P(HTMLParser):
             self.langs.append(d['data-lang'])
         if tag == 'svg':
             self.svg_open += 1
+        if tag in HEADINGS and self.stack and self.stack[-1][0] in LIST_TAGS:
+            self._err('<%s> is a direct child of <%s>, which may only contain '
+                      '<li> — put it in a <details><summary> or wrap it' % (
+                          tag, self.stack[-1][0]))
         if tag in ('pre', 'code'):
             # A <pre> without <code> holds source too, but the shell always
             # writes the pair; tracking either keeps a bare <pre> from silently
@@ -364,9 +379,9 @@ def parse_file(path, where, bad):
 def check_fragments(bad):
     """A fragment is a body slice, not a document: no <html>, no <head>.
 
-    Also cross-references pages.py, so "pages.py declares step 7 but there is
-    no content/07.html" is caught here with a filename, rather than by build.py
-    aborting partway through a rebuild.
+    Also cross-references pages.py, so "pages.py declares a lesson but there
+    is no fragment for that slug" is caught here with a filename, rather than
+    by build.py aborting partway through a rebuild.
     """
     if not os.path.isdir(CONTENT):
         bad.append('no _build/content/ directory')
@@ -376,15 +391,16 @@ def check_fragments(bad):
         bad.append('_build/content/ is empty')
         return []
 
-    # The filename is derived from n, not from slug: two lessons numbered 7 and
-    # 8 both zero-pad fine, but a lesson numbered 1000 would not, so allow both
-    # spellings when matching.
+    # The filename is derived from the slug, not from n. It used to be derived
+    # from n, which made the fragment's name a function of its position: a
+    # reorder would hand each lesson a different body without anything
+    # complaining. See build.py.
     try:
         sys.path.insert(0, HERE)
         from pages import PAGES, APPENDIX
         expected = set()
         for p in PAGES:
-            expected.add('%02d.html' % p['n'])
+            expected.add('%s.html' % p['slug'])
         for a in APPENDIX:
             expected.add('%s.html' % a['slug'])
         for want in sorted(expected):
@@ -414,11 +430,62 @@ def check_fragments(bad):
     return sorted(on_disk)
 
 
+def menu_numbering():
+    """The sidebar's number is derived from the item's index; prove it agrees.
+
+    menu.py deliberately computes the displayed number instead of reading
+    pages.py's `n`, so inserting a lesson cannot leave a row showing a stale
+    number. That is only true while the two agree — if pages.py's `n` ever stops
+    being 1..N in order, the sidebar would silently renumber the whole site
+    around a different sequence than the step pills and the prev/next chain.
+
+    `n` is now *derived* from list position by build.py rather than authored, so
+    the remaining job here is to prove the two still agree, and that each row's
+    read-tracking key matches the slug it links to. The key used to be
+    `step-<n>`, which meant it tracked the number and a reorder invalidated
+    every reader's saved progress — the exact thing it was documented as
+    preventing.
+    """
+    sys.path.insert(0, HERE)
+    try:
+        from build import PAGES
+        import menu
+    except Exception as exc:
+        print('check_site: cannot import menu/pages (%s)' % exc, file=sys.stderr)
+        return []
+
+    bad = []
+    ordered = PAGES
+    for i, p in enumerate(ordered):
+        if p.get('n') != i + 1:
+            bad.append('pages.py: %r is at position %d but reports n=%r — the '
+                       'sidebar would number it %02d while the pill and the '
+                       'prev/next chain use %r'
+                       % (p['slug'], i + 1, p.get('n'), i + 1, p.get('n')))
+
+    # And the rendered menu must carry the right number AND the right key.
+    for g in menu.build_groups(PAGES, []):
+        for item in g.items:
+            at = int(item.number) - 1
+            if 0 <= at < len(ordered):
+                want = 'step-%s' % ordered[at]['slug']
+                if item.page_id != want:
+                    bad.append('menu: row %s links %s but its read-tracking key '
+                               'is %s — should be %s' % (item.number, item.href,
+                                                          item.page_id, want))
+    return bad
+
+
 def order():
     """Reading order: index.html, the numbered lessons, then the appendix.
 
-    Lesson order comes from the numeric filename prefix, which build.py derives
-    from pages.py's `n`.
+    Lesson order comes from pages.py, in list order. It used to come from the
+    numeric filename prefix, which only worked while slugs were required to
+    start with the step number — a coupling that existed so that sorting
+    filenames recovered the order. Slugs no longer carry a number prefix, so
+    filename order and reading order are no longer the same thing, and taking
+    order from the filenames would quietly reorder the site the moment one slug
+    stopped looking like a number.
 
     Appendix order comes from the APPENDIX list in pages.py, NOT from sorting
     the filenames. Sorting looks equivalent and is not: the builder emits
@@ -427,29 +494,45 @@ def order():
     result is a wall of prev/next errors that look like a generator bug.
     """
     sys.path.insert(0, HERE)
+    lessons = []
     try:
-        from pages import APPENDIX
-        expected = [a['slug'] + '.html' for a in APPENDIX]
+        from build import PAGES
+        expected = ['%s.html' % p['slug'] for p in PAGES]
     except Exception as exc:                       # pages.py missing or broken
         print('check_site: cannot import pages.py (%s); falling back to '
-              'filename order for the appendix' % exc, file=sys.stderr)
+              'directory order for the lessons' % exc, file=sys.stderr)
         expected = None
 
-    nums, on_disk = [], []
-    for f in os.listdir(SITE):
-        m = re.match(r'^(\d+)-.*\.html$', f)
-        if m:
-            nums.append((int(m.group(1)), f))
-        elif f.startswith('appendix-'):
-            on_disk.append(f)
+    on_disk = {f for f in os.listdir(SITE) if f.endswith('.html')}
+    try:
+        from pages import APPENDIX
+        apx = [a['slug'] + '.html' for a in APPENDIX]
+    except Exception as exc:
+        print('check_site: cannot import APPENDIX (%s)' % exc, file=sys.stderr)
+        apx = []
 
-    apx = [f for f in (expected or []) if f in on_disk]
-    # anything on disk that pages.py no longer claims is a stale build artefact;
-    # build.py prunes these, so reaching here means the build was not re-run.
-    for f in sorted(set(on_disk) - set(apx)):
-        print('check_site: %s is on disk but not in APPENDIX — re-run build.py '
-              '(it prunes stale pages)' % f)
-    return (['index.html'] + [f for _, f in sorted(nums)], apx)
+    if expected is not None:
+        for f in expected:
+            if f not in on_disk:
+                bad_msg = 'lesson %s is declared in pages.py but not on disk' % f
+                print('check_site: ' + bad_msg)
+            else:
+                lessons.append(f)
+        stray = sorted(on_disk - set(expected) - set(apx) - {'index.html'})
+        for f in stray:
+            print('check_site: %s is on disk but not in pages.py — a stale '
+                  'build artefact, or a lesson that was deleted' % f)
+    else:
+        # pages.py is unimportable, so fall back to whatever order the
+        # filenames give. Only correct for number-prefixed slugs, which is the
+        # pre-v2 convention; it is a degraded path for a broken build, not a
+        # supported layout.
+        lessons = [f for _, f in sorted(
+            (int(re.match(r'^(\d+)-', f).group(1)), f) for f in on_disk
+            if re.match(r'^\d+-.*\.html$', f))]
+
+    apx_present = [f for f in apx if f in on_disk]
+    return (['index.html'] + lessons, apx_present)
 
 
 def check_pages(bad):
@@ -515,11 +598,196 @@ def check_pages(bad):
     return pages
 
 
+# ---------------------------------------------------------------------------
+# Checks added in v2.0. They are real failures, but every existing site fails
+# all three, so they report as WARN until a site opts in.
+#
+# The reason is that these three encode rules nobody was told: the ordering was
+# never checked, fragments were allowed to be trimmed, and `why` was optional.
+# Turning them on for an existing 500-lesson site would report thousands of
+# problems at once, which is indistinguishable from a broken validator, and the
+# reflex would be to delete the checks rather than fix the lessons. WARN keeps
+# them visible without making that reflex available.
+#
+# CLONE_SITE_STRICT=1, or `check_site.py --strict`, promotes them to failures.
+# ---------------------------------------------------------------------------
+STRICT = os.environ.get('CLONE_SITE_STRICT') == '1' or '--strict' in sys.argv
+
+CODE_CLASS = re.compile(
+    r'^\s*(?:@[\w.]+\s*)*(?:public\s+|internal\s+|private\s+|abstract\s+|final\s+|'
+    r'sealed\s+|open\s+|export\s+|pub\s+|async\s+)*'
+    r'(class|interface|struct|enum|trait|impl|mixin|extension|typedef|type|record|'
+    r'actor|object|module|namespace|protocol|def|fn|func|function|sub)\s+'
+    r'([A-Za-z_][\w]*)', re.M)
+
+IDENT = re.compile(r'\b([A-Z][A-Za-z0-9_]{2,})\b')
+
+
+def declared_names(text):
+    """Type and function names a code block appears to define."""
+    return {m.group(2) for m in CODE_CLASS.finditer(text)}
+
+
+def code_blocks(src):
+    return re.findall(r'<pre class="code"[^>]*>(.*?)</pre>', src, re.S)
+
+
+def unescape_code(block):
+    block = re.sub(r'</?code[^>]*>', '', block)
+    for a, b in (('&lt;', '<'), ('&gt;', '>'), ('&quot;', '"'),
+                 ('&#39;', "'"), ('&apos;', "'"), ('&amp;', '&')):
+        block = block.replace(a, b)
+    return block.replace('&nbsp;', ' ')
+
+
+def dependency_order(bad, warn):
+    """No lesson may use a name that a LATER lesson defines.
+
+    The lesson order is the site's spine: a reader follows it and writes each
+    file as they go. A step that references a class introduced three steps
+    later is not a reading inconvenience, it is a step that cannot be
+    completed — the code does not compile at the point the reader is told to
+    write it.
+
+    This is a heuristic and says so. It collects names each lesson's code block
+    defines, then reports any name an earlier lesson *uses* that only a later
+    one defines. It cannot see a name from outside the set taught here, and it
+    will call an ordinary same-named local something it is not. Both errors
+    point the reader at a real coincidence, which is the acceptable direction:
+    a false positive costs one look, a false negative is a broken step.
+    """
+    try:
+        sys.path.insert(0, HERE)
+        from build import PAGES          # normalised: `n` is the list position
+    except Exception as exc:
+        bad.append('cannot import build/pages (%s) — dependency order skipped' % exc)
+        return
+
+    order, first_use = [], {}
+    for p in PAGES:
+        frag = os.path.join(CONTENT, '%s.html' % p['slug'])
+        if not os.path.exists(frag):
+            continue
+        with open(frag, encoding='utf-8') as f:
+            text = '\n'.join(unescape_code(b) for b in code_blocks(f.read()))
+        defines = declared_names(text)
+        uses = {i for i in IDENT.findall(text)} - defines
+        for name in sorted(uses):
+            if name not in first_use:
+                first_use[name] = p['n']
+        order.append((p['n'], p['slug'], defines))
+
+    later = {}
+    for n, slug, defines in order:
+        for name in defines:
+            later.setdefault(name, n)
+
+    out = warn if not STRICT else bad
+    for n, slug, defines in order:
+        frag = os.path.join(CONTENT, '%s.html' % slug)
+        if not os.path.exists(frag):
+            continue
+        with open(frag, encoding='utf-8') as f:
+            text = '\n'.join(unescape_code(b) for b in code_blocks(f.read()))
+        uses = {i for i in IDENT.findall(text)} - declared_names(text)
+        for name in sorted(uses):
+            born = later.get(name)
+            if born is not None and born > n:
+                out.append('content/%s.html: step %d uses %s, which is not '
+                           'defined until step %d — move that lesson earlier '
+                           'or teach %s before anything that needs it'
+                           % (slug, n, name, born, name))
+
+
+def file_block_is_whole(bad, warn):
+    """The block that carries a file's path must be that whole file.
+
+    A code block that stops early and says nothing reads as a finished file.
+    The old guidance told authors to mark the cut, which they did — and a
+    reader copying the block got a file that does not compile, because the
+    class the file declares was `sealed` and its subclasses had been elided
+    into a comment. So a cut inside the *file* block is now an error even
+    though the same marker in a hand-written prose fragment is still fine.
+    """
+    try:
+        sys.path.insert(0, HERE)
+        from build import PAGES
+    except Exception as exc:
+        bad.append('cannot import build/pages (%s) — file block check skipped' % exc)
+        return
+
+    out = warn if not STRICT else bad
+    for p in PAGES:
+        if not p.get('path'):
+            continue
+        frag = os.path.join(CONTENT, '%s.html' % p['slug'])
+        if not os.path.exists(frag):
+            continue
+        with open(frag, encoding='utf-8') as f:
+            blocks = code_blocks(f.read())
+        if not blocks:
+            continue
+        first = unescape_code(blocks[0])
+        for marker in ('// ...', '// …', '# ...', '# …', '/* ...', '...  '):
+            if marker in first:
+                out.append('content/%s.html: the file block is cut short (%r). '
+                           'A lesson shows its whole file — if the file is too '
+                           'big to show, split the file and give each part its '
+                           'own lesson.' % (p['slug'], marker.strip()))
+                break
+
+
+def why_is_present(bad, warn):
+    """Every lesson states why its file exists, before the code.
+
+    `why` exists in pages.py, is rendered by build.py, and was optional — so on
+    a real 511-lesson site every entry carried a purpose statement and not one
+    of them appeared, because nothing required it and nothing reported it
+    missing. A stored-but-unrendered field is worse than an absent one: it
+    looks like the work was done.
+
+    `why=None` is the explicit opt-out and is respected here. It exists so that
+    "not written yet" and "deliberately not applicable" stay distinguishable —
+    a step that only runs a command has no file to justify.
+    """
+    try:
+        sys.path.insert(0, HERE)
+        from build import PAGES
+    except Exception as exc:
+        bad.append('cannot import build/pages (%s) — why check skipped' % exc)
+        return
+
+    out = warn if not STRICT else bad
+    for p in PAGES:
+        if p.get('why', '') is None:
+            continue
+        if not p.get('why'):
+            out.append('pages.py: step %r (%s) has no `why` — every lesson '
+                       'opens with why its file exists, in plain English, '
+                       'before the code. Use why=None only if the step writes '
+                       'no file.' % (p.get('slug'), p.get('n')))
+            continue
+        frag = os.path.join(CONTENT, '%s.html' % p['slug'])
+        if not os.path.exists(frag):
+            continue
+        with open(frag, encoding='utf-8') as f:
+            body = f.read()
+        # build.py generates the section itself, so its presence is implied by
+        # `why` being set. What is worth catching is the author having written
+        # the section by hand as well — which renders the same prose twice.
+        if 'Why this file exists' in body:
+            out.append('content/%s.html: the fragment contains its own "Why '
+                       'this file exists" section AND pages.py sets `why` — the '
+                       'builder already emits one from `why`. Keep the text in '
+                       'pages.py, or set why=None, not both.' % p['slug'])
+
+
 def main():
     args = sys.argv[1:]
     frag_only = '--fragments' in args
     pages_only = '--pages' in args
     bad = []
+    warn = []
 
     frags = None
     if not pages_only:
@@ -541,11 +809,15 @@ def main():
                     p.feed(f.read())
                 langs |= set(p.langs)
 
-    report(bad, frags or [], pages, langs)
+    dependency_order(bad, warn)
+    file_block_is_whole(bad, warn)
+    why_is_present(bad, warn)
+
+    report(bad, frags or [], pages, langs, warn)
     return 1 if bad else 0
 
 
-def report(bad, frags, pages, langs=None):
+def report(bad, frags, pages, langs=None, warn=None):
     """Stats first, verdict last — `BAD: none` is the line to grep for."""
     stats = []
     if frags:
@@ -556,6 +828,11 @@ def report(bad, frags, pages, langs=None):
         stats.append('langs: %d' % len(langs))
     if stats:
         print('   '.join(stats))
+    if warn:
+        print('WARN: %d (staged checks; run with --strict to make these fail)'
+              % len(warn))
+        for w in warn:
+            print('  ' + w)
     if bad:
         print('BAD:')
         for b in bad:

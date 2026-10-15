@@ -11,10 +11,15 @@ how many lines, which manifests, which directories hold the bulk of it, and
 where the entry points are. Then it proposes a phase grouping.
 
 It is deliberately a *draft*. It sorts by directory and then by size, which is
-a serviceable default and a poor dependency order — it cannot see that one
-module imports another. The point is that you get a starting shape to argue
-with, and a directory inventory to argue it with, instead of nothing. Replace
-the ordering with a real dependency sort before writing lessons.
+a serviceable default, and then — unless `--no-deps` is passed — **re-sorts by
+the real import graph**, so a module comes after everything it depends on.
+Reading the imports is mechanical for the formats below. A draft that cannot
+see that one module imports another is a draft somebody has to fix by hand on a
+500-file project, which is the same as not sorting at all.
+
+What the sort cannot do is tell you what a reader needs. Deciding which files
+are worth a lesson means reading the repository; this produces the order they go
+in once you have.
 
 Language detection is by file extension across ~90 languages. Nothing here is
 specific to any ecosystem; the manifest table below is just a list of filenames
@@ -152,6 +157,164 @@ ENTRY = {
 }
 
 
+# --- dependency ordering -----------------------------------------------------
+#
+# Each entry is (regex, group kind). The regexes are deliberately conservative:
+# a missed import costs nothing (the sort falls back to the directory order for
+# that file) whereas a wrong one puts a file before something it needs, which
+# produces a step the reader cannot complete.
+
+IMPORT_PATTERNS = [
+    # python: `from a.b import c`, `import a.b`
+    (re.compile(r'^\s*from\s+([.\w]+)\s+import\b', re.M), 'mod'),
+    (re.compile(r'^\s*import\s+([.\w]+)', re.M), 'mod'),
+    # go / rust / zig: `use a::b`, `mod x;`
+    (re.compile(r'^\s*(?:pub\s+)?use\s+([\w:]+)', re.M), 'mod'),
+    # java / kotlin / scala: `import a.b.C`
+    (re.compile(r'^\s*import\s+(?:static\s+)?([\w.]+)', re.M), 'mod'),
+    # js / ts: `from './a'`, `require('./a')`
+    (re.compile(r"""from\s+['"]([^'"]+)['"]"""), 'rel'),
+    (re.compile(r"""require\(\s*['"]([^'"]+)['"]\s*\)"""), 'rel'),
+    (re.compile(r"""^\s*import\s+['"]([^'"]+)['"]""", re.M), 'rel'),
+    # rust `mod foo;` referencing a sibling module
+    (re.compile(r'^\s*(?:pub\s+)?mod\s+(\w+)\s*;', re.M), 'mod'),
+    # php `use A\B;`
+    (re.compile(r'^\s*use\s+([\w\\]+)', re.M), 'mod'),
+    # ruby `require_relative 'x'`, `require 'x'`
+    (re.compile(r"""^\s*require(?:_relative)?\s+['"]([^'"]+)['"]""", re.M), 'rel'),
+    # dart / java-ish `import 'x.dart';`
+    (re.compile(r"""^\s*(?:import|export)\s+['"]([^'"]+)['"]""", re.M), 'rel'),
+    # swift `import Foo`
+    (re.compile(r'^\s*import\s+(\w+)\s*$', re.M), 'mod'),
+    # c# `using A.B;`
+    (re.compile(r'^\s*using\s+([\w.]+)\s*;', re.M), 'mod'),
+    # elixir `alias A.B`
+    (re.compile(r'^\s*alias\s+([\w.]+)', re.M), 'mod'),
+]
+
+COMMENT_PREFIX = ('#', '//', '--', ';', '%')
+
+
+def strip_comments(text):
+    """Drop comment lines so a commented-out import is not a dependency."""
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith(COMMENT_PREFIX) or s.startswith('*') or s.startswith('/*'):
+            continue
+        out.append(line)
+    return '\n'.join(out)
+
+
+def imports_of(path, ext):
+    """The module specifiers a file imports, as a set of strings."""
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            text = strip_comments(f.read())
+    except OSError:
+        return set()
+    found = set()
+    for rx, kind in IMPORT_PATTERNS:
+        for m in rx.finditer(text):
+            spec = m.group(1)
+            if spec:
+                found.add((kind, spec))
+    return found
+
+
+def _candidates(rel, spec, kind, index):
+    """Every file this specifier could plausibly mean.
+
+    Resolution is ambiguous by nature — `import lib.api` names a module, not a
+    file — so this returns every candidate and lets the caller intersect with
+    the files actually in the repo. Guessing one answer and being wrong silently
+    drops a dependency, which is the failure this whole mechanism exists to
+    prevent.
+    """
+    if kind == 'rel':
+        base = os.path.normpath(os.path.join(os.path.dirname(rel), spec))
+        out = set()
+        for cand in (base, base + '.dart', base + '.py', base + '.js', base + '.ts'):
+            out.add(cand.replace(os.sep, '/'))
+            out.add(os.path.join(cand + '/index').replace(os.sep, '/'))
+        out.add(os.path.join(cand + '.dart').replace(os.sep, '/'))
+        return {c for c in out if c in index}
+    # dotted / colon-separated module name: try suffixes of each segment
+    parts = [p for p in re.split(r'[.:/\\]+', spec) if p and p != '.' and p != '..']
+    out = set()
+    for i in range(len(parts)):
+        tail = '/'.join(parts[i:])
+        for stem in (tail, tail.replace('/', '.')):
+            if stem in index:
+                out.add(stem)
+            for ext_ in ('.dart', '.py', '.ts', '.js', '.rs', '.go', '.rb', '.php'):
+                if stem + ext_ in index:
+                    out.add(stem + ext_)
+    return {c for c in out if c in index}
+
+
+def build_graph(files, root):
+    """{file: {files it imports}} over the candidate set, plus a cycle report."""
+    index = {rel: rel for rel, _ap, _e, _s in files}
+    stem_index = {}
+    for rel, _ap, _e, _s in files:
+        stem_index.setdefault(os.path.splitext(rel)[0], rel)
+        stem_index.setdefault(rel, rel)
+    index.update(stem_index)
+
+    graph, cycles = {}, []
+    for rel, ap, _e, _s in files:
+        deps = set()
+        for kind, spec in imports_of(ap, _e):
+            deps |= _candidates(rel, spec, kind, index)
+        deps.discard(rel)
+        graph[rel] = deps
+    return graph, cycles
+
+
+def topo_sort(order, graph):
+    """Kahn's algorithm, keeping `order` as the tie-break.
+
+    The seed order matters: files with no dependency relationship between them
+    stay in directory/size order rather than in whatever order a set happened
+    to yield, so two scans of an unchanged repository produce the same page
+    list. A deterministic draft is worth more than a clever one.
+
+    Cycles are broken rather than raised on. A mutual import is legal in most of
+    these languages, so refusing to order the project would be refusing to
+    describe it. The members are emitted in seed order and the cycle is
+    returned so the caller can tell the author, which matters because a cycle
+    is a design fact the reader should be told about rather than something the
+    generator silently picks a side on.
+    """
+    pos = {f: i for i, f in enumerate(order)}
+    nodes = [f for f in order if f in graph]
+    indeg = {f: len([d for d in graph[f] if d in nodes and d != f]) for f in nodes}
+    deps = {f: {d for d in graph[f] if d in nodes and d != f} for f in nodes}
+    ready = sorted([f for f in nodes if indeg[f] == 0], key=pos.get)
+    out, cycles = [], []
+
+    while len(out) < len(nodes):
+        if not ready:
+            remaining = sorted([f for f in nodes if f not in out], key=pos.get)
+            cycles.append(remaining)
+            ready = [remaining[0]]
+            for f in remaining:
+                indeg[f] = 0
+        cur = ready.pop(0)
+        out.append(cur)
+        for f in sorted(nodes, key=pos.get):
+            if f in out or f not in deps:
+                continue
+            if cur in deps[f]:
+                deps[f].discard(cur)
+                indeg[f] -= 1
+                if indeg[f] == 0:
+                    ready.append(f)
+        ready.sort(key=pos.get)
+    return out, cycles
+
+
 def walk(root, skip, include, limit_depth=12):
     """Yield (relpath, abspath, ext, size) for text-ish files, skipping noise."""
     root_depth = root.rstrip(os.sep).count(os.sep)
@@ -245,12 +408,16 @@ def analyse(root, skip=None, include=None):
     }
 
 
-def draft_phases(a, max_per_dir):
+def draft_phases(a, max_per_dir, files=None, root=None, use_deps=True):
     """A draft ordering: setup first, then each source directory in turn.
 
-    Sorted by depth then name, so `src/auth` comes before `src/billing` and
+    Seeded by depth then name, so `src/auth` comes before `src/billing` and
     `tests` comes last. Within a directory, smallest first: entry points and
     interfaces tend to be small, and a reader meets the shape before the bulk.
+
+    That seed order is then overridden by the import graph: where B imports A,
+    A is emitted first whatever their directories or sizes. The seed survives as
+    the tie-break so the output stays deterministic between runs.
     """
     phases = []
 
@@ -269,6 +436,7 @@ def draft_phases(a, max_per_dir):
         src_dirs = ['.'] + src_dirs
     src_dirs += [d for d in a['dirs'] if d not in src_dirs and d != '.']
 
+    ordered = []
     n = 0
     for d in src_dirs:
         items = a['files_by_dir'].get(d, [])
@@ -276,13 +444,31 @@ def draft_phases(a, max_per_dir):
             continue
         if len(items) > max_per_dir:
             items = sorted(items, key=lambda t: t[1])[:max_per_dir]
-        files = [i[0] for i in items]
-        n += 1
-        phases.append(('Phase %d &middot; %s' % (n, d), files))
-    return phases
+        ordered.extend(i[0] for i in items)
+
+    seed = list(ordered)
+    cycles = []
+    if use_deps and files and root:
+        graph, _ = build_graph(files, root)
+        teachable = [f for f in seed if f in graph]
+        ranked, cycles = topo_sort(teachable, graph)
+        ranked += [f for f in teachable if f not in ranked]
+        rest = [f for f in seed if f not in teachable]
+        ordered = ranked + rest
+
+    phases = []
+    last_dir = None
+    for f in ordered:
+        d = os.path.dirname(f) or '.'
+        if d != last_dir:
+            n += 1
+            phases.append(('Phase %d &middot; %s' % (n, d), []))
+            last_dir = d
+        phases[-1][1].append(f)
+    return phases, cycles
 
 
-def emit(a, phases, out):
+def emit(a, phases, out, cycles=()):
     w = out.write
     w('%s\n' % a['root'])
     w('=' * (len(a['root']) + 2) + '\n\n')
@@ -313,9 +499,18 @@ def emit(a, phases, out):
         w('\n')
 
     w('Draft step order\n----------------\n\n')
-    w('This is sorted by directory, NOT by dependency. It is a shape to argue\n'
-      'with, not an order to publish. Read each file and reorder so that every\n'
-      'lesson only refers to things earlier lessons have already introduced.\n\n')
+    w('Sorted by the real import graph, so a module comes after everything it\n'
+      'depends on. Where two files have no dependency between them the order is\n'
+      'by directory, then by size. It is a draft: it cannot tell you which files\n'
+      'deserve a lesson, and it does not know that a reader needs the domain\n'
+      'before the wiring. Read it, and argue with it.\n\n')
+    if cycles:
+        w('Import cycles found (%d) — ordered by seed, and worth saying so on the\n'
+          'later page of each pair, because a reader who hits a mutual import\n'
+          'should know the author saw it too:\n\n' % len(cycles))
+        for c in cycles:
+            w('  %s\n' % ' -> '.join(c))
+        w('\n')
     step = 0
     for phase, files in phases:
         w('%s  (%d steps)\n' % (phase.replace('&middot;', '·'), len(files)))
@@ -359,6 +554,8 @@ def main():
     ap.add_argument('--skip', action='append', default=[], metavar='DIR',
                     help='also skip this directory (repeatable). Replaces the '
                          'built-in list rather than adding to it.')
+    ap.add_argument('--no-deps', action='store_true',
+                    help='keep the directory/size order and skip the import sort')
     ap.add_argument('--include', action='append', default=[], metavar='DIR',
                     help='re-enable a directory that is skipped by default, '
                          'e.g. --include docs (repeatable)')
@@ -371,7 +568,9 @@ def main():
 
     skip = set(args.skip) if args.skip else None
     a = analyse(root, skip, set(args.include))
-    phases = draft_phases(a, args.max_per_dir)
+    allfiles = list(walk(root, skip or set(), set(args.include)))
+    phases, cycles = draft_phases(a, args.max_per_dir, allfiles, root,
+                                  use_deps=not args.no_deps)
 
     if args.json:
         print(json.dumps({k: v for k, v in a.items()
@@ -379,7 +578,7 @@ def main():
     elif args.write:
         to_pages(phases, a['root'])
     else:
-        emit(a, phases, sys.stdout)
+        emit(a, phases, sys.stdout, cycles)
     return 0
 
 

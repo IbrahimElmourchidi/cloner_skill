@@ -2,68 +2,123 @@
 """Renders the whole site from _build/pages.py + _build/content/*.html.
 
     python3 _build/build.py
+    python3 _build/build.py --incremental   # only pages whose fragment changed
 
 Everything shared — <head>, sidebar, prev/next, footer — is generated here, so
 adding lesson 51 means adding one PAGES entry and one content fragment, never
 hand-editing a shell. Lesson pages and appendix pages share one template on
 purpose: a fix to the shell then reaches both.
 
+The sidebar itself lives in menu.py, which owns the *shape* of the navigation —
+groups, collapsible, numbers derived from position — so build.py and index.py
+cannot disagree about it and neither has to know what a phase is.
+
 Project-specific text (site name, tagline, where the source lives) lives in
 config.py, not here. This file stays byte-identical across every site the
 skill produces, so it can be updated by copying a new version over an old one.
+
+**Fragments are keyed by slug, not by lesson number.** Keying them by number
+(`content/%02d.html`) made the fragment a *position*, so reordering lessons
+silently handed lesson N the body that belonged to a different lesson — and the
+site still built clean and still passed validation, with the wrong content on
+every page after the edit point. Slugs are stable under renumbering, so an
+insert or a reorder is a move within one list and nothing else.
+
+**`n` is derived, not stored.** The position in PAGES *is* the step number.
+Storing it made reordering mean editing one field per moved entry, and the
+stored value could disagree with the position — a silent failure the validator
+can only catch after the damage. Authoring order by moving lines is the whole
+mechanism now; see references/curriculum.md.
 """
 import os
 import html
+import json
 import re
 import sys
+import hashlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SITE = os.path.dirname(HERE)
 CONTENT = os.path.join(HERE, 'content')
+MANIFEST = os.path.join(HERE, 'manifest.json')
 
 sys.path.insert(0, HERE)
 
 from config import SITE as CFG           # noqa: E402
 from pages import PAGES as _RAW, APPENDIX as _APPENDIX   # noqa: E402
+import menu                             # noqa: E402
+from menu import phase_of, APPENDIX_PHASE  # noqa: E402,F401  (re-exported: index.py imports them here)
 
-PAGES = sorted(_RAW, key=lambda d: d['n'])
+# Bumped when the fragment-naming or the manifest shape changes, so migrate.py
+# knows what a given manifest was written by.
+MANIFEST_VERSION = 2
+
+
+def normalise(pages):
+    """Give each lesson its step number from its position in the list.
+
+    `n` is accepted but not trusted. A stored `n` that disagrees with the
+    position is a hard error rather than a silent correction: someone hand-set a
+    number, and quietly overwriting it would hide the fact that two things
+    disagree about the order. The message names both numbers.
+    """
+    out = []
+    for i, d in enumerate(pages, 1):
+        p = dict(d)
+        want = p.get('n')
+        if want is not None and want != i:
+            sys.exit(
+                'pages.py: %r declares n=%r but sits at position %d.\n'
+                '  `n` is derived from list order now, so it does not need to be\n'
+                '  written. Delete the n= from this entry, or move the entry to\n'
+                '  position %s. The two must not disagree.'
+                % (p.get('slug'), want, i, want))
+        p['n'] = i
+        out.append(p)
+    return out
+
+
+PAGES = normalise(_RAW)
 TOTAL_STEPS = len(PAGES)
-APPENDIX_PHASE = CFG.get('appendix_phase', 'Appendix')
 
 
-def phase_of(p):
-    return p.get('phase') or CFG.get('default_phase', 'Setup')
+def sha256_text(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def sha256_file(path):
+    """Hash a source file, or None when there is nothing there to hash.
+
+    A lesson whose file has been deleted is a fact sync.py has to be able to
+    report, so this returns None instead of raising: "no hash" and "the hash of
+    nothing" must stay distinguishable.
+    """
+    try:
+        with open(path, encoding='utf-8') as f:
+            return sha256_text(f.read())
+    except OSError:
+        return None
 
 
 def sidebar(active_n=None, active_slug=None):
-    out, phase = [], None
-    for p in PAGES:
-        ph = phase_of(p)
-        if ph != phase:
-            phase = ph
-            out.append('  <h4>%s</h4>' % html.unescape(ph))
-        cur = ' aria-current="page"' if p['n'] == active_n else ''
-        out.append(
-            '    <li><a href="{slug}.html" data-page="step-{n}"{cur}>'
-            '<span class="n">{n:02d}</span><span>{nav}</span>'
-            '<span class="tick" hidden>read</span></a></li>'.format(cur=cur, **p))
-    if _APPENDIX:
-        out.append('  <h4>%s</h4>' % html.unescape(APPENDIX_PHASE))
-        for i, a in enumerate(_APPENDIX, 1):
-            cur = ' aria-current="page"' if a['slug'] == active_slug else ''
-            out.append(
-                '    <li><a href="{slug}.html" data-page="appendix{cur}">'
-                '<span class="n">A{i}</span><span>{nav}</span>'
-                '<span class="tick" hidden>read</span></a></li>'.format(
-                    cur=cur, i=i, nav=html.escape(a['nav']), slug=a['slug']))
-    note = CFG.get('sidebar_note')
-    if note:
-        out.append('  <div class="note-box"><p>%s</p></div>' % note)
-    return '\n'.join(out)
+    """The complete `<nav class="side">` element, groups and all.
+
+    Kept as a one-line wrapper so the two callers below keep a trivial call site
+    and there is exactly one implementation of the menu.
+    """
+    return menu.sidebar(PAGES, _APPENDIX, active_n=active_n,
+                        active_slug=active_slug)
 
 
 def steptop(p):
-    """The panel above the lesson body: what this step is and why it exists."""
+    """The panel above the lesson body: what this step does.
+
+    Deliberately does NOT carry `why`. That used to render here, inside the step
+    panel, where it was a single sentence wedged between the command and the
+    file path. A purpose statement is not metadata about the step — it is the
+    thing the reader needs before the code — so it now leads the body as its own
+    section (see `why_section`).
+    """
     body = ''
     cmd = p.get('cmd')
     if cmd:
@@ -77,10 +132,28 @@ def steptop(p):
         body += '<div class="srcpath">writes to <b>%s</b></div>' % html.escape(p['path'])
     elif not body:
         body += '<div class="srcpath">This lesson writes <b>no file</b>.</div>'
-    why = p.get('why')
-    if why:
-        body += '<div class="why"><b>Why it exists.</b> %s</div>' % why
     return body
+
+
+def why_section(p):
+    """The opening "Why this file exists" section, or '' when there is none.
+
+    Inserted raw, not escaped, so it may contain markup: prose is the normal
+    case, and a `<figure class="diagram">` is how a type hierarchy or a data
+    flow is made concrete. A plain string still works and is still a section —
+    the heading is generated here so the page shape cannot vary.
+
+    `why=None` is the explicit opt-out, and it is distinguishable from a missing
+    key on purpose: "this step has no purpose statement yet" and "this step
+    genuinely needs none" are different facts, and check_site reports the first
+    while staying silent about the second. A step that only runs a command, such
+    as a code generator, is the normal case for opting out.
+    """
+    why = p.get('why')
+    if not why:
+        return ''
+    return ('<h2 id="why-it-exists">Why this file exists</h2>\n'
+            '<div class="why">%s</div>\n' % why)
 
 
 def navbottom_appendix(idx):
@@ -126,14 +199,9 @@ SHELL = """<!doctype html>
 <title>{doctitle}</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
-<body data-page="step-{n}"{readkey}>
+<body data-page="{page_id}"{readkey}>
 <div class="shell">
-<nav class="side" aria-label="Steps">
-  <a class="brand" href="index.html">{brand}<small>{tagline}</small></a>
-  <ol>
 {sidebar}
-  </ol>
-</nav>
 <main>
   <div class="eyebrow">
     <span class="ep">{eyebrow}</span>
@@ -177,28 +245,47 @@ def footer_html():
     return '\n'.join(lines)
 
 
-def prune(written):
+def prune(written, previously_written=()):
     """Delete generated pages that are no longer in pages.py.
 
     Without this, renaming a lesson or dropping one leaves its old HTML in the
-    output. The site still opens, and the validator then fails with a page
-    whose prev/next chains no longer exist — an error that looks like a builder
-    bug and is not. Deleting the orphan here turns a confusing failure into a
+    output. The site still opens, and the validator then fails with a page whose
+    prev/next chains no longer exist — an error that looks like a builder bug
+    and is not. Deleting the orphan here turns a confusing failure into a
     silent, correct rebuild.
 
-    Only files matching the two generated name patterns are touched, so a
-    hand-written page sitting in the same directory survives.
+    What counts as "generated" comes from the manifest, not from a filename
+    pattern. The pattern used to be `^\\d+-.*\\.html$`, which relied on slugs
+    starting with the step number — a coupling this version removes, so the
+    pattern now matches almost nothing and every orphan survives. The manifest
+    records exactly what this builder emitted, which is both correct and the
+    safer question: a hand-written page sitting in the site directory was never
+    generated, so it is never a candidate.
+
+    A site with no manifest yet has no record of what it generated, so nothing
+    is pruned and nothing is deleted by accident. `migrate.py` is what brings an
+    older site forward.
     """
     keep = set(written) | {'index.html'}
     removed = []
+    # The manifest is authoritative. The filename patterns are kept as a
+    # fallback for a site that has no manifest yet, which is every site built
+    # before this version: it costs nothing, and dropping them would silently
+    # stop pruning on exactly the sites that have the most orphans.
+    candidates = set(previously_written)
     for fn in os.listdir(SITE):
+        if fn.endswith('.html') and (
+                fn.startswith('appendix-') or re.match(r'^[0-9]{2,4}-.*\.html$', fn)):
+            candidates.add(fn)
+    for fn in sorted(candidates):
         if fn in keep or not fn.endswith('.html'):
             continue
-        if re.match(r'^\d+-.*\.html$', fn) or fn.startswith('appendix-'):
-            os.remove(os.path.join(SITE, fn))
+        target = os.path.join(SITE, fn)
+        if os.path.exists(target):
+            os.remove(target)
             removed.append(fn)
     if removed:
-        print('pruned %d stale page(s): %s' % (len(removed), ', '.join(sorted(removed))))
+        print('pruned %d stale page(s): %s' % (len(removed), ', '.join(removed)))
 
 
 def read_fragment(src):
@@ -219,38 +306,107 @@ def read_fragment(src):
     return body
 
 
-def build():
+def load_manifest():
+    """The previous build's record, or {} when there is not one yet."""
+    try:
+        with open(MANIFEST, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def source_paths(p):
+    """The repository paths a lesson claims, as a list.
+
+    `path` is ONE path for one lesson — that is the rule. It is split on commas
+    so that a lesson naming several paths is still fully accounted for by
+    sync.py and the file checks instead of only its first path being seen. Such
+    a lesson is still wrong and the co-lesson check says so; this just means it
+    is handled rather than half-ignored.
+    """
+    return [s.strip() for s in (p.get('path') or '').split(',') if s.strip()]
+
+
+def write_manifest(records):
+    """Record what each lesson was built from, so `sync` can tell what moved.
+
+    Without this there is no way to know whether a source file changed since the
+    last build: nothing recorded what a lesson was built from, or what the file
+    looked like at the time. Staleness was not merely unchecked, it was
+    unanswerable.
+
+    It also records every generated filename, because that list is how `prune`
+    knows what it may delete. Filenames alone cannot answer it: the old test was
+    a leading-number pattern, and slugs no longer begin with the step number, so
+    the pattern matched nothing and no orphan was ever removed.
+    """
+    payload = {'version': MANIFEST_VERSION,
+               'source_root': CFG.get('source_root', ''),
+               'pages': records,
+               'generated': sorted(r['slug'] + '.html' for r in records) +
+                            sorted(a['slug'] + '.html' for a in _APPENDIX)}
+    with open(MANIFEST, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=1, sort_keys=True)
+        f.write('\n')
+
+
+def build(incremental=False):
     brand = html.escape(CFG['name'])
     readkey = ''
     if CFG.get('read_key'):
         readkey = ' data-read-key="%s"' % html.escape(CFG['read_key'], quote=True)
     written = set()
+    records = []
+    previous = load_manifest()
+    prev_by_slug = {r['slug']: r for r in previous.get('pages', [])
+                     if isinstance(r, dict) and 'slug' in r}
+    root = (CFG.get('source_root') or '').rstrip('/')
+    rebuilt = skipped = 0
 
     for idx, p in enumerate(PAGES):
-        src = os.path.join(CONTENT, '%02d.html' % p['n'])
+        src = os.path.join(CONTENT, '%s.html' % p['slug'])
         if not os.path.exists(src):
-            sys.exit('missing content fragment: ' + src)
-        read_fragment(src)
+            sys.exit('missing content fragment: %s\n'
+                     '  Fragments are named after the slug, so this lesson needs\n'
+                     '  %s.html. See scripts/migrate.py for a site authored before\n'
+                     '  fragments were keyed by slug.' % (src, p['slug']))
+        body = read_fragment(src)
+        frag_sha = sha256_text(body)
+        paths = source_paths(p)
+        src_sha = sha256_file(os.path.join(root, paths[0])) if (root and len(paths) == 1) else None
+        records.append({'n': p['n'], 'slug': p['slug'], 'paths': paths,
+                        'src_sha': src_sha, 'frag_sha': frag_sha})
+
+        out = os.path.join(SITE, '%s.html' % p['slug'])
+        prior = prev_by_slug.get(p['slug'])
+        if incremental and prior and prior.get('frag_sha') == frag_sha and os.path.exists(out):
+            skipped += 1
+            written.add('%s.html' % p['slug'])
+            continue
+
+        why = why_section(p)
         page = SHELL.format(
             doctitle='%s \u00b7 Step %d \u00b7 %s' % (brand, p['n'], p['nav']),
             pill='<span class="step-pill">Step %d of %d</span>' % (p['n'], TOTAL_STEPS),
             n=p['n'], nav=html.escape(p['nav']), h1=html.escape(p['h1']),
             lead=html.escape(p['lead']), phase=html.unescape(phase_of(p)),
-            sidebar=sidebar(active_n=p['n']), readkey=readkey,
-            brand=brand, tagline=html.escape(CFG.get('tagline', '')),
+            sidebar=sidebar(active_slug=p['slug']), readkey=readkey,
             eyebrow=html.escape(CFG.get('eyebrow', '')),
             what_label=html.escape(CFG.get('what_label', 'The step')),
-            steptop=steptop(p), content=open(src, encoding='utf-8').read(),
+            steptop=steptop(p), content=(why + '\n' + body) if why else body,
+            page_id='step-%s' % p['slug'],
             navbottom=navbottom(p, idx), footer=footer_html())
-        with open(os.path.join(SITE, '%s.html' % p['slug']), 'w', encoding='utf-8') as f:
+        with open(out, 'w', encoding='utf-8') as f:
             f.write(page)
         written.add('%s.html' % p['slug'])
+        rebuilt += 1
 
     for i, a in enumerate(_APPENDIX):
         src = os.path.join(CONTENT, '%s.html' % a['slug'])
         if not os.path.exists(src):
             sys.exit('missing appendix fragment: ' + src)
-        read_fragment(src)
+        body = read_fragment(src)
         page = SHELL.format(
             doctitle='%s \u00b7 Appendix \u00b7 %s' % (brand, a['nav']),
             pill='<span class="step-pill">Appendix \u00b7 not in the lesson order</span>',
@@ -258,18 +414,20 @@ def build():
             lead=html.escape(a['lead']),
             phase=html.unescape(CFG.get('appendix_eyebrow', 'Appendix \u00b7 reference')),
             sidebar=sidebar(active_slug=a['slug']), readkey=readkey,
-            brand=brand, tagline=html.escape(CFG.get('tagline', '')),
             eyebrow=html.escape(CFG.get('eyebrow', '')),
             what_label=html.escape(CFG.get('what_label', 'The step')),
-            steptop='', content=read_fragment(src),
+            steptop='', content=body,
+            page_id='appendix-%s' % a['slug'],
             navbottom=navbottom_appendix(i), footer=footer_html())
         with open(os.path.join(SITE, '%s.html' % a['slug']), 'w', encoding='utf-8') as f:
             f.write(page)
         written.add('%s.html' % a['slug'])
 
-    prune(written)
-    print('built %d pages + %d appendix' % (len(PAGES), len(_APPENDIX)))
+    prune(written, previous.get('generated', []))
+    write_manifest(records)
+    tail = (' (%d written, %d unchanged)' % (rebuilt, skipped)) if incremental else ''
+    print('built %d pages + %d appendix%s' % (len(PAGES), len(_APPENDIX), tail))
 
 
 if __name__ == '__main__':
-    build()
+    build(incremental='--incremental' in sys.argv[1:])

@@ -57,9 +57,11 @@ table is a pixel width. See `references/renumbering.md`.
 
 Safer order of operations:
 
-1. Write the new fragments first, with their intended numbers.
-2. Renumber `pages.toml` with the careful method.
-3. Fix cross-references, classified by column role.
+1. Split the source file into real files, so each lesson shows a whole one.
+2. Add the new entries to `PAGES` in the right order. Nothing else is needed:
+   step numbers are derived from list position and fragments follow the slug, so
+   there is no renumbering step. See `references/renumbering.md`.
+3. Fix cross-references in prose, classified by column role.
 4. Build, then validate.
 5. Re-read one page that straddles the split boundary. That is the page most
    likely to read wrong even when every validator passes.

@@ -4,6 +4,7 @@
 #   clone-site init <project> --name "My Project"   scaffold a site
 #   clone-site scan <project>                       inventory + draft step order
 #   clone-site render [site]                        re-render + validate, no edits
+#   clone-site sync [site]                          compare site against the repo
 #   clone-site help
 #
 # This exists for discoverability, not capability. Every subcommand is a
@@ -53,6 +54,7 @@ clone-site — turn a repository into a step-by-step teaching site
   clone-site init <project> [options]   Scaffold a site for a repository
   clone-site scan <project> [options]   Inventory a repo, draft a step order
   clone-site render [site]              Re-render and validate, changing nothing
+  clone-site sync [site] [options]      Compare the site against the repository
   clone-site help                       This message
 
 init
@@ -67,9 +69,22 @@ scan
       --write         Emit a pages.py-shaped draft step order
       --skip <dir>    Replace the built-in skip list (repeatable)
       --include <dir> Re-enable a directory skipped by default (repeatable)
+      --no-deps       Keep the directory/size order; skip the import-graph sort
 
 render
   <site>             Path to the generated site. Default: docs/site
+
+sync
+  <site>             Path to the generated site. Default: docs/site
+      --root <path>  Repository to compare against. Default: config source_root
+      --apply        Act on the safe cases, not just report them
+      --yes          Do not stop to ask before deleting
+
+sync is a dry run by default and changes nothing until --apply. It reports five
+cases: added, modified, renamed, deleted, orphaned. It removes a lesson whose
+file is gone AND whose contents are absent from the repository; it refuses to
+touch one it cannot prove, because a misconfigured --root that auto-deleted on
+an inference would take half the lessons with it.
 
 render is idempotent and touches nothing under _build/content/. It is the
 right command after a hand-edit, after a split, or on someone else's site.
@@ -124,6 +139,23 @@ need_python() {
   Windows:     install from python.org and tick \"Add to PATH\"."
 }
 
+# sync [site] -- compare the site's manifest against the repository.
+#
+# Runs the SITE's copy, not the skill's, for the same reason render does: once
+# a site exists it owns its generator. That is also what lets sync.py stay
+# generic — it holds no project names and is updated by copying over the top.
+sync() {
+    site=${1:-docs/site}
+    shift 2>/dev/null || true
+    build_dir=$site/_build
+    [ -d "$build_dir" ] || die "no site at $site — run: clone-site init <project>"
+    [ -z "$PY" ] && need_python
+    [ -f "$build_dir/sync.py" ] || die "$build_dir/sync.py is missing — copy a newer generator over the site (clone-site init <project> --force)"
+    cd "$build_dir" || die "cannot enter $build_dir"
+    "$PY" sync.py "$@"
+    exit $?
+}
+
 cmd=${1:-help}
 [ $# -gt 0 ] && shift
 
@@ -131,6 +163,7 @@ case $cmd in
     init)          run bootstrap.py "$@" ;;
     scan)          run scan.py "$@" ;;
     render)        render "$@" ;;
+    sync)          sync "$@" ;;
     help|-h|--help) usage ;;
     -v|--version)  printf 'cloner_skill (git)\n' ;;
     *)             die "unknown command: $cmd  (try: clone-site help)" ;;

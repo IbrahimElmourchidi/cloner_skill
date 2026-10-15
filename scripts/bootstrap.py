@@ -32,7 +32,19 @@ ROOT = os.path.dirname(HERE)
 # Copied into the generated site. build.py holds no project names of its own,
 # so these files stay byte-identical between projects and can be updated later
 # by copying over the top.
-GENERATOR = ['build.py', 'index.py', 'check_site.py', 'check_svg.py']
+#
+# `menu.py` is here because build.py and index.py both import it, and it is
+# absent from this list in v1.1 — which meant every freshly scaffolded site
+# failed its own smoke test with `ModuleNotFoundError: No module named 'menu'`.
+# The scaffold has always run build.py immediately after copying, so this was
+# caught by the scaffold itself rather than in the wild, which is why it
+# survived: nobody had a site that had not been scaffolded by this script.
+#
+# `sync.py` is copied so the site can be brought back in line with a repository
+# that has moved on. `migrate.py` is NOT copied — it runs once, from the
+# installed skill, to bring an existing site forward to the current version.
+GENERATOR = ['build.py', 'index.py', 'check_site.py', 'check_svg.py', 'menu.py',
+             'sync.py']
 STYLES = ['style.css', 'app.js']
 
 
@@ -108,9 +120,22 @@ def main():
 
     write_config(os.path.join(build_dir, 'config.py'), name, project)
 
-    example = os.path.join(build_dir, 'content', '01.html')
-    if args.force or not os.path.exists(example):
-        shutil.copy2(os.path.join(ROOT, 'templates', 'content', '01.html'), example)
+    # The example fragment is named after the first lesson's slug, because
+    # fragments are keyed by slug. Copying it to a fixed `01.html` produced a
+    # scaffold that could not build itself — the builder looks for
+    # `content/<slug>.html` and found nothing. The name is read from the
+    # template's own pages.py rather than hardcoded, so the two cannot drift.
+    example_slug = None
+    ns = {}
+    with open(os.path.join(ROOT, 'templates', 'pages.py'), encoding='utf-8') as f:
+        exec(compile(f.read(), 'pages.py', 'exec'), ns)
+    if ns.get('PAGES'):
+        example_slug = ns['PAGES'][0].get('slug')
+
+    if example_slug:
+        example = os.path.join(build_dir, 'content', '%s.html' % example_slug)
+        if args.force or not os.path.exists(example):
+            shutil.copy2(os.path.join(ROOT, 'templates', 'content', '01.html'), example)
     if args.force or not os.path.exists(os.path.join(build_dir, 'pages.py')):
         shutil.copy2(os.path.join(ROOT, 'templates', 'pages.py'),
                      os.path.join(build_dir, 'pages.py'))

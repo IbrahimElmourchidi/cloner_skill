@@ -1,0 +1,381 @@
+NOTES — improvements for the clone-site skill
+=============================================
+Reviewed site: docs/site (yooStore_new)
+Date: 2026-10-15
+
+
+--- NOTE 1 — Lesson order must respect code dependencies ----------------------
+
+Lesson: 025-result-contract.html
+
+Problem:
+  The `Result` class lesson (025) is numbered before `AppFailure` (026), but the
+  `Result` code depends on `AppFailure`. Every snippet in lesson 025 refers to
+  `AppFailure` — e.g. `final class ResultFailure<T>(final AppFailure failure)
+  extends Result<T>` and `required R Function(AppFailure failure) onFailure` —
+  yet `AppFailure` is not defined until the following lesson
+  (026-app-failure.html).
+
+  A reader following the clone steps in numeric order reaches step 25 and has to
+  write code that references a type that does not exist yet. The step is not
+  self-contained and cannot be completed as written.
+
+Rule this exposes:
+  The clone/lesson order must be a valid build order: every piece of code must
+  already have ALL of its dependents-in-waiting (the things it imports or
+  references) introduced in an EARLIER step. Never forward-reference a type,
+  class, function, constant or file that appears in a later lesson.
+
+Suggested fix:
+  1. Swap the two lessons so `AppFailure` is step 25 and `Result` is step 26 —
+     then check what else depends on the new pair and re-sort the surrounding
+     steps (026/027 app-failure-codes may also need to move into a single
+     AppFailure lesson or be ordered ahead of `Result`).
+  2. The scan/plan stage should validate dependency order, not just directory +
+     file-size order. Before emitting the step list, build the import/type
+     dependency graph over the files being taught and topologically sort it, so
+     a file never precedes a file it references.
+  3. Add a validation pass that fails loudly when a lesson's code references an
+     identifier that no earlier lesson defines. Treat it like a compile error
+     rather than something the reader discovers mid-clone.
+  4. references/curriculum.md ("Ordering within a phase") should state this rule
+     explicitly with the Result/AppFailure case as the worked example, since it
+     currently has no dependency-ordering guidance of its own.
+
+
+--- NOTE 2 — Always show the complete file, never a trimmed block -----------
+
+Lesson: 026-app-failure.html  (and the trimmed block on every other page)
+
+Problem:
+  The lesson teaches `lib/core/error/app_failure.dart`, which is 63 lines and
+  declares six classes:
+
+    sealed class AppFailure          (line 5)
+    NetworkFailure                   (line 24)
+    AuthFailure                      (line 33)
+    CacheFailure                     (line 42)
+    RemoteFailure                    (line 51)
+    UnexpectedFailure                (line 60)
+
+  The page shows only the first two. The other four are replaced by a single
+  hand-written comment on the last line of the block:
+
+    // … AuthFailure, CacheFailure, RemoteFailure, UnexpectedFailure
+
+  That comment is not code, so the reader copying the step gets a file that
+  does not compile — `AppFailure` is declared `sealed`, so the concrete
+  subclasses are mandatory, and later steps construct `AuthFailure`,
+  `CacheFailure` and `UnexpectedFailure` with nowhere to import them from.
+  There is no "view full source" link on the page either, so this trimmed block
+  is the only copy of the file anywhere in the site.
+
+  Two smaller symptoms of the same cause:
+    - The page header reads "writes to lib/core/error/app_failure.dart — the
+      full file is shown below, trimmed to the part this step is about". That
+      sentence contradicts itself.
+    - The lede promises "sixteen codes", but no code is shown, so nothing on
+      the page substantiates it.
+
+Rule this exposes:
+  A code block on a lesson page must be the complete, verbatim source of the
+  file the step writes. Every line, in the file's real order. Trimming,
+  eliding or replacing code with a `// …` comment is not allowed — a reader
+  must be able to copy the block into a file and get exactly the file the
+  lesson claims to write.
+
+  This follows directly from the skill's own rule "one lesson = one file" and
+  its promise that pages carry "the real file contents". A trimmed block is a
+  half-file, and it breaks the prev/next chain: the reader cannot stop at any
+  lesson and still have a working tree.
+
+Suggested fix:
+  1. references/authoring.md currently treats trimming as legitimate and
+     recommends the `// ...` marker for any block that ends on an unbalanced
+     brace. That guidance is what produced this page. Rework it: the elision
+     marker is only ever for hand-written illustrative fragments in the prose,
+     never for the "writes to <path>" block that carries the lesson's file.
+  2. Make the file block non-negotiable in the template — the generator should
+     read the file and emit it whole, rather than leaving the trimming decision
+     to the model at authoring time.
+  3. Add a validator check: if a lesson declares "writes to <path>", assert
+     that the first code block's content matches that file byte-for-byte after
+     stripping the leading `// <path>` header comment. Fail the build on any
+     mismatch, so a trimmed block cannot ship silently.
+  4. Fix the self-contradicting header wording so it never claims both "full
+     file" and "trimmed".
+  5. If a file is genuinely too large to put on one page, fix it by SPLITTING
+     the source file (see references/splitting.md) — never by showing part of an
+     unsplit one. Note that lesson 027 is already "app-failure-codes"; if codes
+     live in a separate file, that is the legitimate split, and this lesson then
+     shows all six classes of this file.
+  6. templates/content/01.html directly contradicts this note. Lines 46-51 ship
+     a section literally titled "Is this the whole file?" whose answer is:
+
+       "Yes. Early steps show complete files. Later steps sometimes show an
+        excerpt because the surrounding file has grown past the point where
+        reproducing it helps — when that happens, say so here rather than
+        letting the reader assume the block is the entire contents."
+
+     That sanctions the exact behaviour we are removing. Delete this section
+     from the template; per note 3 the section that replaces it is "why this
+     file exists", not a disclaimer about the block.
+
+
+--- NOTE 3 — Every lesson must open with a plain-English "why this file exists"
+
+Lesson: all 511 (structural — none currently comply)
+
+Problem:
+  A lesson page opens straight into the code. The canonical shape is:
+
+    <h1>Write core/error/app_failure.dart</h1>
+    <p class="lede">One sealed hierarchy, sixteen codes, and the message a
+       shopper sees.</p>
+    <div class="steptop"> ... writes to lib/core/error/app_failure.dart ... </div>
+    <h2>The file</h2>
+    <pre class="code"> ... </pre>
+
+  `templates/content/01.html` line 1 IS `<h2>The file</h2>` — so the template
+  itself provides no opening explanation, and every page inherits that. Measured
+  across the site: 221 pages open with "The file", 40 with "The files", and only
+  12 anywhere contain a "What this feature is for" heading. The other ~250 pages
+  have no equivalent at all.
+
+  The `lede` is not a substitute. It is a one-line slogan — "One sealed
+  hierarchy, sixteen codes, and the message a shopper sees" — which describes
+  the file's shape rather than its reason for existing. A reader who does not
+  already know what an `AppFailure` is for has nowhere to find out before being
+  asked to write one.
+
+Rule this exposes:
+  Every lesson that writes a file or introduces a class MUST begin, before any
+  code block, with a short section answering, in very simple English:
+    - Why does this file exist?
+    - What problem does it solve?
+    - What breaks without it?
+
+  This is the "why" the reader needs in order to evaluate the code that follows,
+  and it belongs FIRST — before "The file", not after the analysis sections.
+  Language must be genuinely plain: short sentences, no jargon, no class names
+  used as the first explanation of themselves. Where the idea is spatial or
+  structural (a type hierarchy, a data flow, a request lifecycle), a small ASCII
+  or SVG diagram is welcome and often clearer than a paragraph.
+
+  It should be short — roughly a paragraph and a diagram, not an essay. The
+  existing deep-dive material ("Is this best practice?", "What could be better",
+  "Risks") stays where it is, at the end of the page, and must not be merged
+  into the opening.
+
+Suggested fix:
+  1. Add a leading section to templates/content/01.html, before `<h2>The file</h2>`
+     — e.g. `<h2>Why this file exists</h2>` — and make it a required part of the
+     page contract in references/authoring.md.
+  2. Add a matching CSS class for it. The stylesheet currently offers only
+     .note, .key, .risk, .warn, .verdict, .tip, .fnote — none of which reads as
+     "background motivation". Introduce something like `.why` in
+     docs/site/assets/style.css so the section is visually distinct from the
+     risk/verdict boxes at the foot of the page.
+  3. Make it structural, not advisory: have the validator assert that every
+     lesson page has a "why" section as its first `<h2>`, and fail the build
+     otherwise. 511 pages that all silently lack it is a generator defect, not
+     511 authoring mistakes, so it should be enforced in code.
+  4. CORRECTION to the diagnosis: the `why` mechanism already exists and is
+     simply unused. All three pieces are already shipped:
+       - templates/pages.py documents a `why` field on every PAGES entry
+         ("Why this file exists, in one or two sentences... 'what is this' is
+         obvious from the code, 'why is this here' is not").
+       - scripts/build.py:64-66 renders it as
+         `<div class="why"><b>Why it exists.</b> %s</div>` in the steptop.
+       - docs/site/assets/style.css already defines 3 `.why` rules.
+     Measured: 0 of 511 pages contain `class="why"`. The generator can already do
+     this and never did, because the field is optional (`if why:` in build.py)
+     and nothing enforces it. So the fix is mostly validation + a prompt during
+     authoring, not new machinery — a much cheaper change than note 3 implied.
+     Note it renders in the steptop panel (under the lede), which does satisfy
+     "before any code block"; it just needs to be required rather than optional,
+     and ideally promoted to its own leading `<h2>` section per the rule above.
+  5. Related: lesson 026's nav note-box claims "Step order is a topological sort
+     of the project's real import graph, so every file exists before the one
+     that imports it." That promise is currently false — see note 1. If the
+     ordering fix lands, this sentence becomes true and should be kept; if not,
+     it should be corrected rather than shipped as an unearned guarantee.
+
+
+--- NOTE 4 — Re-runnable regeneration: stable ordering + incremental rebuild ---
+
+Lesson: the generator itself (structural). No single lesson demonstrates it.
+
+What already works (do not rebuild these):
+  - The sidebar is ALREADY a single data structure. templates/pages.py holds
+    `PAGES` as "the single source of truth for what exists and in what order",
+    and scripts/menu.py:8 owns the menu's shape and derives every group and
+    number from list position. So requirement 1 is largely met — ordering is one
+    list, not markup spread across 511 pages.
+  - scripts/build.py:159 `prune()` already deletes generated HTML for pages no
+    longer present in PAGES, and correctly spares non-generated files.
+
+What is missing:
+
+(a) No incremental rebuild — nothing anywhere detects change.
+    Grepping scripts/ and templates/ for `hash|sha|manifest|mtime|stat(` returns
+    no matches. There is no record of which source file each lesson was built
+    from, nor of what its contents were at build time. Every `render` rewrites
+    all 511 pages and no page can be identified as stale. Regenerating after a
+    code edit means re-reading the repo by hand and re-checking every affected
+    lesson manually.
+
+(b) No way to map source files to lessons.
+    Nothing links a lesson to the file it teaches except the human-readable
+    `path=` string in PAGES, which is prose, not an indexed key. Consequences:
+      - A DELETED source file leaves its lesson alive. The page keeps teaching a
+        file that no longer exists, `prune()` never fires because the entry is
+        still in PAGES, and nothing warns. Per this note, a deleted file must
+        remove its lesson from the list entirely.
+      - A RENAMED file looks identical to a delete + an add.
+      - A file edited on disk is indistinguishable from one that has never
+        changed, so staleness cannot be detected even in principle.
+
+(c) No `sync`/`refresh` command. bin/clone-site:132 routes only `scan` and
+    `render`. There is no way to say "the repo moved on, bring the site back in
+    line" without re-running the full interactive curriculum design by hand.
+
+LANDMINE — this must be fixed before note 1:
+    scripts/build.py:209 loads lesson fragments by STEP NUMBER:
+        src = os.path.join(CONTENT, '%02d.html' % p['n'])
+    while appendix fragments (line 228) are loaded by SLUG:
+        src = os.path.join(CONTENT, '%s.html' % a['slug'])
+
+    So lessons are position-addressed and the appendix is name-addressed. The
+    moment you reorder PAGES — which is precisely what the note 1 dependency fix
+    requires — every lesson after the edit point silently loads the fragment that
+    belonged to a different lesson. The site builds clean and passes validation,
+    and the content is quietly wrong. Fix the keying to slugs (uniform with the
+    appendix) BEFORE any reordering work, or the reorder will corrupt 500+
+    pages in a way nothing detects.
+
+Suggested fix:
+
+  1. Re-key lesson fragments by slug, not by number, in build.py. Do this first
+     and independently; it is a prerequisite for note 1, not part of it.
+
+  2. Give PAGES a stable identity that survives reordering. `slug` is the
+     natural key, but pages.py itself warns that "inserting a lesson then
+     renumbers every reference by hand". Support that properly:
+       - Make `n` DERIVED at build time from list position rather than stored,
+         so reordering never requires renumbering edits.
+       - Allow explicit reordering (move one lesson, or a block of lessons) via
+         a separate `after=` / `before=` field that the builder resolves, so a
+         reorder is a one-line change instead of an edit per entry.
+       - Keep the lesson's slug constant even when its number changes, so URLs
+         and inbound links survive the move.
+
+  3. Add a manifest written at build time — e.g. `_build/manifest.json` holding,
+     per lesson: slug, source `path`, a hash of the source file's contents, and
+     the hash of the fragment. This is the missing link that makes both change
+     detection and deletion detection possible.
+
+  4. Add a `sync` command that sweeps the repo and reports a diff by category
+     rather than rebuilding silently:
+       - ADDED     — a new source file with no lesson: report as a candidate new
+                     lesson, do not auto-generate prose.
+       - MODIFIED  — hash differs from the manifest: report slug + a diff, and
+                     mark the lesson's code block stale so it cannot ship
+                     unnoticed. This is the case note 2 and note 3 make dangerous,
+                     because a stale fragment silently contradicts the repo.
+       - RENAMED   — path changed but content hash matches: rewrite `path`,
+                     keep the lesson, no re-authoring needed.
+       - DELETED   — path no longer exists AND its hash is absent from the
+                     repo: remove the entry from PAGES, delete the fragment and
+                     the generated HTML, and renumber. Per this note the lesson
+                     must disappear from the list entirely — not be marked as
+                     removed, and not left as a tombstone page.
+       - ORPHANED   — an entry in PAGES whose file is gone but which was never
+                     seen by the scan (hand-added, or moved outside the scan
+                     root). Flag loudly and require an explicit decision rather
+                     than guessing.
+     `sync` must be dry-run by default and require confirmation, so a wrong
+     inference cannot mass-delete lessons. Deletion in particular should print
+     every path it is about to drop and wait.
+
+  5. Teach this in SKILL.md: the site is not a one-shot export, it is regenerable
+     and versioned against the repo. Add `sync` to the command table at
+     SKILL.md:215-220 alongside `scan` and `check`.
+
+  6. Interaction with note 1: the topological reorder from note 1 and the
+     `after=` reordering from this note are the same mechanism. Build the stable
+     ordering once and let the dependency sorter feed it, instead of
+     hand-editing `n` in two independent places.
+
+===============================================================================
+IMPLEMENTED — 2026-10-15
+===============================================================================
+All four notes are done in the skill source. Skill version 1.1.0 -> 2.0.0.
+Self-test: 122 checks, 0 failed (was 97).
+
+NOTE 1 — dependency order
+  - scripts/scan.py: reads imports per language family, resolves them to
+    repo files, topologically sorts (Kahn, seed order as tie-break), reports
+    cycles. New flag --no-deps shows the old directory order for comparison.
+  - scripts/check_site.py: new dependency_order() check names both lessons.
+    Output on the real case:
+      "step 1 uses AppFailure, which is not defined until step 2"
+  - Fixed the false claim in scan.py's docstring, emit(), and SKILL.md.
+  - references/curriculum.md: new "Reordering is moving a line" section plus
+    the rule, with the Result/AppFailure case as the worked example.
+
+NOTE 2 — always the whole file
+  - scripts/check_site.py: new file_block_is_whole() check.
+  - references/authoring.md: "Excerpts versus whole files" replaced with
+    "Whole files, not excerpts".
+  - references/curriculum.md: the 400+ line row now says split the file.
+  - templates/content/01.html: removed the "Is this the whole file?" section.
+
+NOTE 3 — mandatory "why" section
+  - scripts/build.py: why_section() emits "<h2>Why this file exists</h2>" as the
+    first thing in the lesson body; why= is inserted raw so it may hold markup
+    or a <figure class="diagram">.
+  - scripts/check_site.py: new why_is_present(); why=None is the explicit
+    opt-out and is not reported, a missing key is.
+  - templates/pages.py, references/authoring.md, SKILL.md <why_first> updated.
+  - NOTE: the .why mechanism already existed in build.py but was optional and
+    unused. The live 511-lesson site additionally had a why.py holding 511
+    purpose statements that build.py never rendered at all — a live bug found
+    while reading it. That site is regenerated separately.
+
+NOTE 4 — regeneration
+  - PREREQUISITE, done first: fragments are keyed by SLUG, not step number.
+    This was the landmine — reordering used to hand each lesson another
+    lesson's body while the site still built and validated.
+  - scripts/build.py: n is derived from list position; a stored n that
+    disagrees is a hard error naming both numbers. --incremental skips pages
+    whose fragment hash is unchanged. Writes _build/manifest.json.
+  - scripts/menu.py: read-tracking key is step-<slug>, not step-<n>, so
+    renumbering cannot wipe a reader's progress. The comment above it already
+    claimed this was true; now it is. Appendix keys are per-slug too.
+  - scripts/check_site.py: order() takes reading order from pages.py, not from
+    numeric filename prefixes; prune() in build.py now uses the manifest's list
+    of generated files instead of a pattern that stopped matching.
+  - NEW scripts/sync.py: ADDED / MODIFIED / RENAMED / DELETED / ORPHANED.
+    Dry run by default. --apply acts only on the two provable cases. A deleted
+    file whose bytes are absent from the repo is removed entirely; one whose
+    bytes were never seen is reported and left alone.
+  - NEW scripts/migrate.py: v1.1-to-v2.0. Renames fragments, strips n=, writes
+    .bak, reports mismatches instead of guessing.
+  - bin/clone-site: `sync` subcommand + usage. bootstrap.py GENERATOR now
+    includes menu.py and sync.py.
+
+BUGS FOUND AND FIXED WHILE DOING THIS
+  1. bootstrap.py never copied menu.py, so every freshly scaffolded site
+     failed its own smoke test with ModuleNotFoundError. Present since v1.1.
+  2. menu.py's page_id was step-<n> despite the comment saying it was
+     independent of the number — renumbering invalidated saved progress.
+  3. prune()'s pattern relied on number-prefixed slugs; once slugs stopped
+     carrying numbers it matched nothing and no orphan was ever removed.
+  4. All appendix rows shared one page_id ('appendix'), so every one of them
+     highlighted at once.
+
+STAGED CHECKS
+  The three new checks report as WARN by default because every existing site
+  fails all three, and a few hundred failures at once reads as a broken
+  validator. Promote with --strict or CLONE_SITE_STRICT=1.
