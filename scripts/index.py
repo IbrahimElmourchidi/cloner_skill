@@ -89,12 +89,7 @@ TEMPLATE = """<!doctype html>
 </head>
 <body data-page="index"{readkey}>
 <div class="shell">
-<nav class="side" aria-label="Steps">
-  <a class="brand" href="index.html">{brand}<small>{tagline}</small></a>
-  <ol>
 {sidebar}
-  </ol>
-</nav>
 <main>
   <div class="eyebrow">
     <span class="ep">{eyebrow}</span>
@@ -160,13 +155,11 @@ def main():
     ])
     howto_html = '\n'.join('  <li>%s</li>' % h for h in howto)
 
-    brand = html.escape(CFG['name'])
     readkey = (' data-read-key="%s"' % html.escape(CFG['read_key'], quote=True)
                if CFG.get('read_key') else '')
 
     page = TEMPLATE.format(
-        doctitle=CFG['name'], brand=brand,
-        tagline=html.escape(CFG.get('tagline', '')),
+        doctitle=CFG['name'],
         eyebrow=html.escape(CFG.get('eyebrow', '')),
         subtitle=html.escape(CFG.get('subtitle', '')),
         title=html.escape(CFG.get('title', CFG['name'])),

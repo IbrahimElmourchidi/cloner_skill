@@ -61,7 +61,34 @@ main > .key, main > .eyebrow, main > .srcpath, main > hr{max-width:1500px}
 }
 .side .brand{display:block;padding:0 20px 14px;font-weight:700;font-size:16px;text-decoration:none;color:var(--ink)}
 .side .brand small{display:block;font-weight:500;color:var(--muted);font-size:12.5px;margin-top:3px;letter-spacing:.02em}
-.side h4{font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);padding:14px 20px 6px;margin:0}
+/* ---------- the menu itself: groups of items, one data structure ----------
+   One collapsible group per phase instead of one flat row per lesson. The
+   <summary> is the whole interaction: no JavaScript, keyboard-reachable, and
+   it reports its own open/closed state to assistive technology. */
+.side .menu{padding-bottom:8px}
+.side .grp{border-bottom:1px solid var(--line)}
+.side .grp:last-child{border-bottom:0}
+.side .grp>summary{
+  display:flex;align-items:baseline;gap:10px;cursor:pointer;list-style:none;
+  padding:10px 18px 8px;font-size:11.5px;text-transform:uppercase;
+  letter-spacing:.07em;color:var(--muted);
+}
+.side .grp>summary::-webkit-details-marker{display:none}
+.side .grp>summary::before{
+  content:"";flex:none;width:0;height:0;margin-right:2px;
+  border-left:5px solid currentColor;
+  border-top:4px solid transparent;border-bottom:4px solid transparent;
+  transition:transform .15s ease;
+}
+.side .grp[open]>summary::before{transform:rotate(90deg) translateX(-1px)}
+.side .grp>summary:hover{color:var(--ink)}
+.side .grp>summary:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+.side .gt{min-width:0;flex:1}
+.side .gr{font-family:var(--f-mono);font-size:11px;color:var(--grey);letter-spacing:0;flex:none}
+/* The appendix is not part of the order; give it a different accent so a
+   reader who followed "21 of 40" into "A1" knows they left the sequence. */
+.side .grp[data-kind="appendix"]>summary{color:var(--teal)}
+
 .side ol{list-style:none;margin:0;padding:0}
 .side li{margin:0}
 .side a{
@@ -69,7 +96,7 @@ main > .key, main > .eyebrow, main > .srcpath, main > hr{max-width:1500px}
   padding:6px 18px;font-size:14px;line-height:1.45;color:var(--muted);
   text-decoration:none;border-left:3px solid transparent;
 }
-.side a > span:nth-child(2){min-width:0}
+.side a > span.t{min-width:0}
 .side a:hover{color:var(--ink);background:var(--surface2)}
 .side a[aria-current="page"]{color:var(--blue);border-left-color:var(--blue);background:var(--blue-soft);font-weight:600}
 .side a .n{font-family:var(--f-mono);font-size:12px;color:var(--grey);min-width:20px;flex:none}
@@ -242,10 +269,13 @@ footer ul{font-size:14px}
 @media (max-width:900px){
   .shell{flex-direction:column;align-items:stretch}
   .side{width:100%;height:auto;position:static;border-right:0;border-bottom:1px solid var(--line);padding-bottom:14px}
+  /* On a phone the sidebar is above the fold, so it must not claim the whole
+     screen before the reader reaches the lesson. Keep the groups collapsed
+     and lay an open group's items out as wrapping chips. */
+  .side .menu{max-height:42vh;overflow-y:auto}
   .side ol{display:flex;flex-wrap:wrap;gap:2px;padding:0 10px}
   .side ol li{margin:0}
   .side a{border-left:0;border-bottom:3px solid transparent;padding:6px 10px}
   .side a[aria-current="page"]{border-left:0;border-bottom-color:var(--blue)}
-  .side h4{padding:12px 20px 4px}
   main{padding:0 18px 50px}
 }

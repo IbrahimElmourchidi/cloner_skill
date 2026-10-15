@@ -23,55 +23,194 @@ impl<'a> Site<'a> {
     }
 }
 
-fn sidebar(site: &Site, active_n: Option<usize>, active_slug: Option<&str>) -> String {
-    let mut out: Vec<String> = Vec::new();
-    let mut phase: Option<&str> = None;
+/// One row of the menu: a destination, a label, a read-tracking key, a number.
+///
+/// `page_id` is the read-tracking key (`data-page`). It is deliberately
+/// independent of the displayed number so renumbering cannot invalidate a
+/// reader's saved progress.
+struct MenuItem<'a> {
+    href: &'a str,
+    nav: &'a str,
+    page_id: String,
+    number: String,
+}
 
-    for p in &site.pages.page {
-        let ph = site.pages.phase_of(site.cfg, p);
-        if phase != Some(ph) {
-            phase = Some(ph);
-            out.push(format!("  <h4>{}</h4>", unescape(ph)));
+/// A run of consecutive items that share a heading, rendered as one
+/// collapsible group.
+///
+/// The `<summary>` is the whole interaction: native, keyboard-reachable, and it
+/// reports its own open/closed state to assistive technology. The heading this
+/// replaced was an `<h4>` written *between* `<li>` elements, which is invalid
+/// HTML inside `<ol>` and only ever worked because the CSS hid the bullets.
+struct MenuGroup<'a> {
+    title: String,
+    kind: &'static str,
+    items: Vec<MenuItem<'a>>,
+}
+
+impl<'a> MenuGroup<'a> {
+    /// The range this group covers, shown in its summary: `21&ndash;52`.
+    ///
+    /// Derived from the items, so it is right for a group of any size and needs
+    /// no bookkeeping when a lesson is inserted.
+    fn label(&self) -> String {
+        match (self.items.first(), self.items.last()) {
+            (None, _) => String::new(),
+            (Some(a), None) => a.number.clone(),
+            (Some(a), Some(b)) => format!("{}&ndash;{}", a.number, b.number),
         }
-        let cur = if Some(p.n) == active_n { " aria-current=\"page\"" } else { "" };
-        out.push(format!(
-            "    <li><a href=\"{}.html\" data-page=\"step-{}\"{}>\
-             <span class=\"n\">{:02}</span><span>{}</span>\
+    }
+
+    fn holds(&self, page_id: &str) -> bool {
+        self.items.iter().any(|i| i.page_id == page_id)
+    }
+
+    fn render(&self, active: Option<&str>, force_open: bool) -> String {
+        let open = if self.holds(active.unwrap_or("")) || force_open {
+            " open"
+        } else {
+            ""
+        };
+        // `<ol start>` is how the number stays semantic rather than decorative:
+        // the list itself knows it begins at the group's first lesson, so the
+        // rendered row and the `<ol>` cannot disagree about what "step 21" is.
+        let start = match (self.kind, self.items.first()) {
+            ("lesson", Some(i)) => match i.number.parse::<usize>() {
+                Ok(n) => format!(" start=\"{n}\""),
+                Err(_) => String::new(),
+            },
+            _ => String::new(),
+        };
+        let rows: Vec<String> = self.items.iter().map(|i| i.render(active)).collect();
+        format!(
+            "    <details class=\"grp\" data-kind=\"{kind}\"{open}>\n\
+             \x20     <summary><span class=\"gt\">{title}</span>\
+             <span class=\"gr\">{label}</span></summary>\n\
+             \x20     <ol{start}>\n{rows}\n      </ol>\n\
+             \x20   </details>",
+            kind = self.kind,
+            open = open,
+            title = unescape(&self.title).replace('\u{b7}', "&middot;"),
+            label = self.label(),
+            rows = rows.join("\n"),
+        )
+    }
+}
+
+impl<'a> MenuItem<'a> {
+    fn render(&self, active: Option<&str>) -> String {
+        // `cur` is a sibling attribute, not part of the data-page value.
+        // Putting it inside the quotes produced
+        // data-page="appendix aria-current="page"", which the browser
+        // parses as one attribute whose value is `appendix aria-current=`
+        // — so the current-page highlight never applied and read-tracking
+        // keyed on the mangled string.
+        let cur = if Some(self.page_id.as_str()) == active {
+            " aria-current=\"page\""
+        } else {
+            ""
+        };
+        format!(
+            "      <li><a href=\"{href}.html\" data-page=\"{page_id}\"{cur}>\
+             <span class=\"n\">{number}</span><span class=\"t\">{nav}</span>\
              <span class=\"tick\" hidden>read</span></a></li>",
-            escape(&p.slug),
-            p.n,
-            cur,
-            p.n,
-            escape(&p.nav),
-        ));
+            href = escape(self.href),
+            page_id = self.page_id,
+            cur = cur,
+            number = self.number,
+            nav = escape(self.nav),
+        )
     }
+}
 
-    if !site.pages.appendix.is_empty() {
-        out.push(format!("  <h4>{}</h4>", unescape(&site.cfg.appendix_phase)));
-        for (i, a) in site.pages.appendix.iter().enumerate() {
-            let cur = if Some(a.slug.as_str()) == active_slug { " aria-current=\"page\"" } else { "" };
-            // `cur` is a sibling attribute, not part of the data-page value.
-            // Putting it inside the quotes produced
-            // data-page="appendix aria-current="page"", which the browser
-            // parses as one attribute whose value is `appendix aria-current=`
-            // — so the current-page highlight never applied and read-tracking
-            // keyed on the mangled string.
-            out.push(format!(
-                "    <li><a href=\"{}.html\" data-page=\"appendix\"{}>\
-                 <span class=\"n\">A{}</span><span>{}</span>\
-                 <span class=\"tick\" hidden>read</span></a></li>",
-                escape(&a.slug),
-                cur,
-                i + 1,
-                escape(&a.nav),
-            ));
+/// The whole menu as data: groups in reading order, numbers by index.
+///
+/// Two rules, and everything else falls out of them:
+///
+///   * A new group starts wherever the phase changes — so grouping is a
+///     consequence of the list, not a second list to maintain.
+///   * The number is a running counter across *all* groups, not per group, so
+///     "step 21" means the same thing in the sidebar, in the filename and in the
+///     page's own pill. Inserting a lesson renumbers the rest for free, and no
+///     row can disagree with its own file name.
+fn build_menu_groups<'a>(site: &'a Site<'a>) -> Vec<MenuGroup<'a>> {
+    let cfg = site.cfg;
+    let mut groups: Vec<MenuGroup<'a>> = Vec::new();
+    for (position, p) in site.pages.page.iter().enumerate() {
+        let phase = site.pages.phase_of(cfg, p).to_string();
+        let item = MenuItem {
+            href: &p.slug,
+            nav: &p.nav,
+            page_id: format!("step-{}", p.n),
+            number: format!("{:02}", position + 1),
+        };
+        match groups.last_mut() {
+            Some(g) if g.title == phase => g.items.push(item),
+            _ => groups.push(MenuGroup {
+                title: phase,
+                kind: "lesson",
+                items: vec![item],
+            }),
         }
     }
 
-    if let Some(note) = site.cfg.sidebar_note() {
-        out.push(format!("  <div class=\"note-box\"><p>{note}</p></div>"));
+    // The appendix is reference material, not part of the order, so it gets its
+    // own group and its own A-numbering rather than continuing the step count.
+    if !site.pages.appendix.is_empty() {
+        groups.push(MenuGroup {
+            title: site.cfg.appendix_phase.clone(),
+            kind: "appendix",
+            items: site
+                .pages
+                .appendix
+                .iter()
+                .enumerate()
+                .map(|(i, a)| MenuItem {
+                    href: &a.slug,
+                    nav: &a.nav,
+                    page_id: "appendix".to_string(),
+                    number: format!("A{}", i + 1),
+                })
+                .collect(),
+        });
     }
-    out.join("\n")
+    groups
+}
+
+/// The complete `<nav class="side">` element.
+fn sidebar(site: &Site, active_n: Option<usize>, active_slug: Option<&str>) -> String {
+    let active: Option<String> = match (active_n, active_slug) {
+        (Some(n), _) => Some(format!("step-{n}")),
+        (None, Some(_)) => Some("appendix".to_string()),
+        (None, None) => None,
+    };
+    let active = active.as_deref();
+    let groups = build_menu_groups(site);
+
+    // On the overview nothing is active, so no group would be open and the menu
+    // would read as a wall of collapsed headings. Force the first one open
+    // instead: enough to show the component works, and the reader has
+    // one-click routes to the rest.
+    let body: Vec<String> = groups
+        .iter()
+        .enumerate()
+        .map(|(i, g)| g.render(active, active.is_none() && i == 0))
+        .collect();
+
+    let note = match site.cfg.sidebar_note() {
+        Some(n) => format!("\n  <div class=\"note-box\">\n    <p>{n}</p>\n  </div>"),
+        None => String::new(),
+    };
+    format!(
+        "<nav class=\"side\" aria-label=\"Steps\">\n\
+         \x20 <a class=\"brand\" href=\"index.html\">{brand}<small>{tagline}</small></a>\n\
+         \x20 <div class=\"menu\" data-menu>\n{body}\n  </div>{note}\n\
+         </nav>",
+        brand = escape(&site.cfg.name),
+        tagline = escape(&site.cfg.tagline),
+        body = body.join("\n"),
+        note = note,
+    )
 }
 
 /// The panel above the lesson body: what this step writes, and why it exists.
@@ -190,10 +329,7 @@ fn shell(
 </head>\n\
 <body data-page=\"step-{n}\"{readkey}>\n\
 <div class=\"shell\">\n\
-<nav class=\"side\" aria-label=\"Steps\">\n  \
-<a class=\"brand\" href=\"index.html\">{brand}<small>{tagline}</small></a>\n  \
-<ol>\n{sidebar}\n  </ol>\n\
-</nav>\n\
+{sidebar}\n\
 <main>\n  \
 <div class=\"eyebrow\">\n    \
 <span class=\"ep\">{eyebrow}</span>\n    \
@@ -217,8 +353,6 @@ fn shell(
         doctitle = doctitle,
         n = n,
         readkey = readkey,
-        brand = escape(&cfg.name),
-        tagline = escape(&cfg.tagline),
         sidebar = sidebar_html,
         eyebrow = escape(&cfg.eyebrow),
         pill = pill,
