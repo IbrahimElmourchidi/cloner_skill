@@ -110,6 +110,91 @@ def sidebar(active_n=None, active_slug=None):
                         active_slug=active_slug)
 
 
+def esc_prose(text):
+    """Escape for prose, but leave `<code>&hellip;</code>` intact.
+
+    `nav`, `h1` and `lead` are escaped flat, which is right for a hook. A
+    preview is prose that routinely names a file or a type, so `<code>` is the
+    one tag worth keeping. Everything else is still escaped, so a stray `<` in
+    a sentence cannot open a tag — the same trade `why` makes, in the other
+    direction.
+    """
+    out = html.escape(text, quote=False)
+    return out.replace('&lt;code&gt;', '<code>').replace('&lt;/code&gt;', '</code>')
+
+
+def stubs_of(p):
+    """`stubs=` as a list of dicts, whatever shape it was written in.
+
+    A single dict is accepted so the common case — one placeholder — reads as
+    one dict rather than a list of one. A missing key is an empty list, which
+    is the overwhelmingly common case and must stay free of ceremony.
+
+    `path` is required and is the whole point: it is the file the reader has to
+    invent in order to compile this step, and it is matched against later
+    lessons' own `path=` to decide whether the stub was ever retired.
+    """
+    raw = p.get('stubs') or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    out = []
+    for s in raw:
+        if isinstance(s, str):                      # path= only, nothing else
+            s = {'path': s}
+        s = dict(s)
+        if not s.get('path'):
+            raise SystemExit(
+                'pages.py: %r declares a stub with no path.\n'
+                '  A stub exists to name a file the reader has to invent in order\n'
+                '  to compile this step. Without the path there is nothing to match\n'
+                '  against a later lesson, so nothing could ever retire it.'
+                % p.get('slug'))
+        out.append(s)
+    return out
+
+
+def preview_block(p):
+    """What the reader can now see that they could not before.
+
+    This is the payoff line, and it is the reason a journey order is worth
+    having at all: without it, a step that wires up a screen and a step that
+    rewrites a helper look identical from the outside.
+    """
+    text = p.get('preview')
+    if not text:
+        return ''
+    return ('<div class="preview"><b>What you can see now.</b> %s</div>'
+            % esc_prose(text))
+
+
+def stubs_block(p):
+    """The placeholders this step needs in order to compile.
+
+    Rendered next to the file path because that is where the reader looks when
+    the compiler says a name is undefined. Naming the missing file, the names it
+    has to provide, and where the real one lands turns a compile error into a
+    to-do the author already wrote down.
+    """
+    stubs = stubs_of(p)
+    if not stubs:
+        return ''
+    items = []
+    for s in stubs:
+        bits = ['<code>%s</code>' % html.escape(s['path'])]
+        if s.get('names'):
+            bits.append('must provide <code>%s</code>'
+                        % html.escape(s['names']))
+        if s.get('real'):
+            bits.append('replaced in %s' % html.unescape(s['real']))
+        if s.get('note'):
+            bits.append(esc_prose(s['note']))
+        items.append('<li>%s.</li>' % '; '.join(bits))
+    return ('<div class="stubs"><b>Not written yet.</b> Write a placeholder '
+            'for each of these, or this step will not compile. They are '
+            'replaced by real lessons later, in the order they are read.'
+            '<ul>%s</ul></div>' % ''.join(items))
+
+
 def steptop(p):
     """The panel above the lesson body: what this step does.
 
@@ -118,6 +203,12 @@ def steptop(p):
     file path. A purpose statement is not metadata about the step — it is the
     thing the reader needs before the code — so it now leads the body as its own
     section (see `why_section`).
+
+    `preview` and `stubs` DO live here, and for the same reason in the opposite
+    direction: both are statements about this step in particular rather than
+    about the file, and both are consulted at the moment the reader tries the
+    step — run it, then compile it. Putting them in the body buries them under
+    the code they describe.
     """
     body = ''
     cmd = p.get('cmd')
@@ -132,6 +223,8 @@ def steptop(p):
         body += '<div class="srcpath">writes to <b>%s</b></div>' % html.escape(p['path'])
     elif not body:
         body += '<div class="srcpath">This lesson writes <b>no file</b>.</div>'
+    body += preview_block(p)
+    body += stubs_block(p)
     return body
 
 

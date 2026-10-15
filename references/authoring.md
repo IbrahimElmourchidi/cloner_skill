@@ -21,6 +21,8 @@ a fragment: no `<html>`, no `<head>`, no `<main>`, no `<body>`. Start with an
 | `<ul>`, `<ol>`, `<li>` | Lists. |
 | `<pre class="code" data-lang="X">` | Source code. |
 | `<pre class="cmd">` | A shell command. Handled by `cmd=` in pages.py. |
+| `<div class="preview">` | What the reader can see now. Rendered from `preview=`; never hand-written. |
+| `<div class="stubs">` | The placeholders this step needs. Rendered from `stubs=`; never hand-written. |
 | `<div class="tbl">` + `<table>` | A table that may overflow on a narrow screen. |
 | `<div class="verdict">` | One judgement about one choice. |
 | `<div class="risk">` | What breaks. Red. |
@@ -58,6 +60,30 @@ the judgement is legible without reading the badge.
 ```
 
 The bolded `<b class="t">` is the label. One or more `<p>` after it.
+
+### The two panels above the page
+
+`preview=` and `stubs=` render in the step panel at the top, between the file
+path and the body — above the `why=`, not inside the fragment. They are not block
+vocabulary because they are not written by hand: they come from `pages.py` so
+that the validator reads the same declaration the reader sees. A `preview` block
+typed into a fragment is a preview nobody checks and a reader cannot trust.
+
+They sit at the top because both are consulted at the same moment — the reader
+runs the step, then compiles it. Buried under the code they describe, neither is
+read.
+
+`preview=` is escaped with `<code>` left intact, so filenames and types can be
+written naturally:
+
+```python
+preview='Run it. Home shows four tabs, each with three grey cards, because '
+        'the <code>catalog</code> stub returns nothing yet.'
+```
+
+`stubs=` renders one list item per placeholder. Only `path` is rendered as an
+escaped `<code>`; `real` is inserted as-is so a phase name can carry its
+`&middot;`, and `note` is escaped like `preview`. Paths are escaped, always.
 
 ## Page shape
 

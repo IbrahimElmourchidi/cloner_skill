@@ -3,7 +3,7 @@
 //! Lesson pages and appendix pages share one shell on purpose: a fix to the
 //! shell then reaches both, instead of leaving two templates to drift.
 
-use crate::model::{Config, Page, Pages};
+use crate::model::{Config, Page, Pages, Stub};
 use crate::util::{escape, unescape};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -214,7 +214,12 @@ fn sidebar(site: &Site, active_n: Option<usize>, active_slug: Option<&str>) -> S
 }
 
 /// The panel above the lesson body: what this step writes, and why it exists.
-fn steptop(site: &Site, p: &Page) -> String {
+///
+/// Takes only the page. It used to take the site as well and end with
+/// `let _ = site;`, which is the shape a dead parameter leaves behind: nothing
+/// in the panel comes from the config or the surrounding pages, so nothing
+/// should have to construct one to call it.
+fn steptop(p: &Page) -> String {
     let mut body = String::new();
     if let Some(cmd) = p.cmd.as_deref().filter(|c| !c.is_empty()) {
         let esc = escape(cmd);
@@ -233,13 +238,71 @@ fn steptop(site: &Site, p: &Page) -> String {
     } else if body.is_empty() {
         body.push_str("<div class=\"srcpath\">This lesson writes <b>no file</b>.</div>");
     }
+    body.push_str(&preview_block(p));
+    body.push_str(&stubs_block(p));
     if let Some(why) = p.why.as_deref().filter(|w| !w.is_empty()) {
         // `why` is prose, not a path: entities in it are intentional, so it is
         // inserted raw exactly as the file contents are.
         body.push_str(&format!("<div class=\"why\"><b>Why it exists.</b> {why}</div>"));
     }
-    let _ = site;
     body
+}
+
+/// Escape for prose, but leave `<code>&hellip;</code>` intact.
+///
+/// `nav`, `h1` and `lead` are escaped flat, which is right for a hook. A preview
+/// is prose that routinely names a file or a type, so `<code>` is the one tag
+/// worth keeping. Everything else is still escaped, so a stray `<` in a sentence
+/// cannot open a tag — the same trade `why` makes, in the other direction.
+fn esc_prose(s: &str) -> String {
+    escape(s)
+        .replace("&lt;code&gt;", "<code>")
+        .replace("&lt;/code&gt;", "</code>")
+}
+
+/// What the reader can now see that they could not before.
+fn preview_block(p: &Page) -> String {
+    match p.preview.as_deref().filter(|t| !t.is_empty()) {
+        Some(text) => format!(
+            "<div class=\"preview\"><b>What you can see now.</b> {}</div>",
+            esc_prose(text)
+        ),
+        None => String::new(),
+    }
+}
+
+/// The placeholders this step needs in order to compile.
+///
+/// Rendered next to the file path because that is where the reader looks when the
+/// compiler says a name is undefined. Naming the missing file, the names it has
+/// to provide, and where the real one lands turns a compile error into a to-do
+/// the author already wrote down.
+fn stubs_block(p: &Page) -> String {
+    if p.stubs.is_empty() {
+        return String::new();
+    }
+    let mut items = String::new();
+    for s in &p.stubs {
+        let mut bits = vec![format!("<code>{}</code>", escape(&s.path))];
+        if let Some(names) = Stub::prose("names", s) {
+            // Flat, not esc_prose: the <code> wrapper is already there, and
+            // honouring another one would let a stray tag nest inside it.
+            bits.push(format!("must provide <code>{}</code>", escape(names)));
+        }
+        if let Some(real) = Stub::prose("real", s) {
+            // Raw, like `why`: a phase name carries its `&middot;` on purpose.
+            bits.push(format!("replaced in {real}"));
+        }
+        if let Some(note) = Stub::prose("note", s) {
+            bits.push(esc_prose(note));
+        }
+        items.push_str(&format!("<li>{}.</li>", bits.join("; ")));
+    }
+    format!(
+        "<div class=\"stubs\"><b>Not written yet.</b> Write a placeholder for each \
+         of these, or this step will not compile. They are replaced by real lessons \
+         later, in the order they are read.<ul>{items}</ul></div>"
+    )
 }
 
 fn navbottom(site: &Site, idx: usize) -> String {
@@ -417,7 +480,7 @@ pub fn build(site: &Site) -> Result<(), String> {
             sidebar(site, Some(p.n), None),
             readkey.clone(),
             format!("<span class=\"step-pill\">Step {} of {total}</span>", p.n),
-            &steptop(site, p),
+            &steptop(p),
             content,
             navbottom(site, idx),
             footer_html(cfg),
@@ -461,4 +524,132 @@ pub fn build(site: &Site) -> Result<(), String> {
     }
     println!("built {} pages + {} appendix", site.pages.page.len(), site.pages.appendix.len());
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+
+    fn page() -> Page {
+        Page {
+            n: 1,
+            slug: "01-first".into(),
+            nav: "n".into(),
+            h1: "h".into(),
+            lead: "l".into(),
+            path: Some("src/main.rs".into()),
+            cmd: None,
+            phase: None,
+            why: None,
+            preview: None,
+            stubs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_page_without_preview_or_stubs_renders_neither() {
+        let html = steptop(&page());
+        assert!(!html.contains("preview"), "{html}");
+        assert!(!html.contains("stubs"), "{html}");
+        // The path line is what the two would otherwise follow.
+        assert!(html.contains("writes to <b>src/main.rs</b>"), "{html}");
+    }
+
+    #[test]
+    fn preview_renders_as_the_payoff_line() {
+        let mut p = page();
+        p.preview = Some("Run it. Home shows four grey cards.".into());
+        let html = steptop(&p);
+        assert!(
+            html.contains("<div class=\"preview\"><b>What you can see now.</b> Run it. Home shows four grey cards.</div>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn preview_keeps_code_and_escapes_everything_else() {
+        let mut p = page();
+        p.preview = Some("The <code>catalog</code> returns < 5 & nothing.".into());
+        let html = steptop(&p);
+        // <code> survives, because a preview names files and types constantly.
+        assert!(html.contains("The <code>catalog</code>"), "{html}");
+        // A bare `<` in a sentence must not be able to open a tag.
+        assert!(html.contains("returns &lt; 5 &amp; nothing"), "{html}");
+    }
+
+    #[test]
+    fn an_empty_preview_is_no_preview() {
+        let mut p = page();
+        p.preview = Some(String::new());
+        assert!(!steptop(&p).contains("preview"));
+    }
+
+    #[test]
+    fn a_stub_names_the_file_the_types_and_where_it_lands() {
+        let mut p = page();
+        p.stubs = vec![Stub {
+            path: "src/catalog.rs".into(),
+            names: Some("Catalog, HomeFeed".into()),
+            real: Some("Phase 4 &middot; Catalog".into()),
+            note: Some("Every method returns an empty list.".into()),
+        }];
+        let html = steptop(&p);
+        assert!(html.contains("<b>Not written yet.</b>"), "{html}");
+        assert!(html.contains("<code>src/catalog.rs</code>"), "{html}");
+        assert!(html.contains("must provide <code>Catalog, HomeFeed</code>"), "{html}");
+        // `real` is raw: a phase name carries its entity on purpose.
+        assert!(html.contains("replaced in Phase 4 &middot; Catalog"), "{html}");
+        assert!(html.contains("Every method returns an empty list."), "{html}");
+    }
+
+    #[test]
+    fn a_stub_renders_its_own_line_and_ends_inside_the_list_item() {
+        let mut p = page();
+        p.stubs = vec![Stub { path: "a.rs".into(), ..Default::default() }];
+        let html = steptop(&p);
+        // One <li> per stub, with the full stop inside it. A `.` after </li> is
+        // a bare text node in a <ul>: invalid, and it renders convincingly.
+        assert!(html.contains("<li><code>a.rs</code>.</li>"), "{html}");
+    }
+
+    #[test]
+    fn a_stub_path_cannot_open_a_tag() {
+        let mut p = page();
+        p.stubs = vec![Stub {
+            path: "src/<b>bold</b>.rs".into(),
+            ..Default::default()
+        }];
+        let html = steptop(&p);
+        assert!(html.contains("<code>src/&lt;b&gt;bold&lt;/b&gt;.rs</code>"), "{html}");
+        assert!(!html.contains("<code>src/<b>"), "{html}");
+    }
+
+    #[test]
+    fn empty_stub_fields_are_left_out_rather_than_rendered_empty() {
+        let mut p = page();
+        p.stubs = vec![Stub {
+            path: "a.rs".into(),
+            names: Some(String::new()),
+            real: None,
+            note: None,
+        }];
+        let html = steptop(&p);
+        assert!(html.contains("<li><code>a.rs</code>.</li>"), "{html}");
+        assert!(!html.contains("must provide"), "{html}");
+        assert!(!html.contains("replaced in"), "{html}");
+    }
+
+    #[test]
+    fn the_panels_sit_after_the_path_and_before_the_why() {
+        let mut p = page();
+        p.preview = Some("Something changed.".into());
+        p.stubs = vec![Stub { path: "a.rs".into(), ..Default::default() }];
+        p.why = Some("Because.".into());
+        let html = steptop(&p);
+        let path = html.find("writes to").expect("path");
+        let preview = html.find("What you can see now").expect("preview");
+        let stubs = html.find("Not written yet").expect("stubs");
+        let why = html.find("Why it exists").expect("why");
+        assert!(path < preview && preview < stubs && stubs < why, "{html}");
+    }
 }

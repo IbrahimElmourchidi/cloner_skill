@@ -150,21 +150,6 @@ def main():
         rc, out = run(['python3', 'check_svg.py'], bdir)
         check('check_svg passes with no diagrams', 'problems: 0' in out, out[-200:])
 
-        # ---- appendix order comes from pages.py, not the filenames ----
-        z = open(os.path.join(site, 'appendix-zebra.html'), encoding='utf-8').read()
-        a = open(os.path.join(site, 'appendix-alpha.html'), encoding='utf-8').read()
-        check('appendix chain follows pages.py declaration order',
-              'href="appendix-alpha.html"' in z and 'href="index.html"' in z
-              and 'href="appendix-zebra.html"' in a,
-              'zebra should point to alpha; alpha should point to zebra')
-
-        # ---- stale page pruning ----
-        open(os.path.join(site, '99-orphan.html'), 'w').write('<h1>x</h1>')
-        rc, out = run(['python3', 'build.py'], bdir)
-        check('build prunes stale pages',
-              rc == 0 and not os.path.exists(os.path.join(site, '99-orphan.html')),
-              out[-200:])
-
         # ---- validator catches what it claims to ----
         # Fragments are named after the slug, not the step number.
         frag = os.path.join(bdir, 'content', 'util.html')
@@ -216,6 +201,156 @@ def main():
             if callable(teardown_restore):
                 teardown_restore()
         put(good)
+
+        # ---- join.py: a curriculum split across parts is still one list ----
+        # The failure this exists to prevent is not "the parts are wrong" — it
+        # is "the parts were right and pages.py was re-emitted from a stale
+        # copy", which looks identical to every other green build. So the check
+        # that matters is the round trip: pages.py survives being exploded and
+        # rejoined, byte for byte, with the head and the APPENDIX intact.
+        join = os.path.join(SCRIPTS, 'join.py')
+        pdir = os.path.join(bdir, '_parts')
+
+        def parts(*bodies):
+            os.makedirs(pdir, exist_ok=True)
+            for f in os.listdir(pdir):
+                os.remove(os.path.join(pdir, f))
+            for i, body in enumerate(bodies):
+                _write(pdir, '%02d.py' % (i + 1), body)
+
+        def entry(slug, path, phase='Phase 1 &middot; Core'):
+            return ("dict(slug='%s', nav='%s',\n"
+                    "     h1='The %s file', lead='Lead.',\n"
+                    "     path='%s', phase='%s',\n"
+                    "     why='It exists so the later step can read it.'),\n"
+                    % (slug, slug, slug, path, phase))
+
+        parts(entry('main', 'src/main.py'), entry('util', 'src/util.py'),
+              entry('store', 'src/store.py'))
+        rc, out = run(['python3', join, bdir, '--check'], ROOT)
+        check('join --check accepts a well-formed split',
+              rc == 0 and 'BAD: none' in out, out[-400:])
+        rc, out = run(['python3', join, bdir, '--check',
+                       '--root', project], ROOT)
+        check('join --root confirms every path exists',
+              rc == 0 and 'does not exist' not in out, out[-400:])
+
+        before = open(os.path.join(bdir, 'pages.py'), encoding='utf-8').read()
+        rc, out = run(['python3', join, bdir], ROOT)
+        joined = open(os.path.join(bdir, 'pages.py'), encoding='utf-8').read()
+        check('join writes pages.py from the parts', rc == 0 and joined != before,
+              out[-300:])
+        check('join preserves the docstring above the list',
+              joined.startswith(before[:before.index('PAGES = [')]))
+        check('join preserves the APPENDIX below the list',
+              'appendix-zebra' in joined and 'TOTAL_STEPS = len(PAGES)' in joined)
+        rc2, out2 = run(['python3', 'build.py'], bdir)
+        rc3, out3 = run(['python3', 'check_site.py'], bdir)
+        check('a joined curriculum renders and validates',
+              rc2 == 0 and rc3 == 0 and 'BAD: none' in out3, out3[-400:])
+
+        # ---- split is the other direction, and it does not install ----
+        run(['python3', join, bdir, '--split', '1'], ROOT)
+        names = sorted(os.listdir(pdir))
+        check('split writes one zero-padded part per entry',
+              names == ['01.py', '02.py', '03.py'], str(names))
+        check('split leaves pages.py alone',
+              open(os.path.join(bdir, 'pages.py'), encoding='utf-8').read() == joined)
+        rc, out = run(['python3', join, bdir, '--check'], ROOT)
+        check('a curriculum split and rejoined is unchanged',
+              rc == 0, out[-300:])
+
+        # ---- the ordering trap: part10.py sorts before part2.py ----
+        # The one way this script can silently reorder a curriculum, which is
+        # why unpadded names are refused rather than warned about.
+        parts(entry('main', 'src/main.py'), entry('util', 'src/util.py'),
+              entry('store', 'src/store.py'))
+        shutil.move(os.path.join(pdir, '03.py'), os.path.join(pdir, '3.py'))
+        rc, out = run(['python3', join, bdir, '--check'], ROOT)
+        check('an unpadded part filename is refused',
+              rc != 0 and 'zero-padded' in out, out[-300:])
+
+        # ---- the duplicate this is most likely to produce ----
+        # A curriculum assembled from several files by several edits is where a
+        # slug or a path gets written twice, and both duplicates are silent.
+        parts(entry('main', 'src/main.py'), entry('util', 'src/util.py'),
+              entry('again', 'src/main.py'))
+        rc, out = run(['python3', join, bdir, '--check'], ROOT)
+        check('a duplicate path is refused',
+              rc != 0 and 'already written by' in out, out[-300:])
+        parts(entry('main', 'src/main.py'), entry('main', 'src/util.py'))
+        rc, out = run(['python3', join, bdir, '--check'], ROOT)
+        check('a duplicate slug is refused',
+              rc != 0 and 'already used by' in out, out[-300:])
+
+        # ---- the rules that would otherwise surface 200 lessons later ----
+        for label, body, pattern in (
+                ('a stored n=', entry('main', 'src/main.py').replace(
+                    "dict(slug=", "dict(n=3, slug="), 'derived from position'),
+                ('a missing why', entry('main', 'src/main.py').replace(
+                    "     why='It exists so the later step can read it.'),\n",
+                    '),\n'), 'has no why'),
+                ('a number-prefixed slug',
+                 entry('main', 'src/main.py').replace("slug='main'", "slug='01-main'"),
+                 'starts with a number'),
+                ('a computed value',
+                 entry('main', 'src/main.py').replace("path='src/main.py'",
+                                                      "path=SRC[0]"),
+                 'not a literal'),
+                ('a path missing from the repository',
+                 entry('gone', 'src/never.py'), 'does not exist')):
+            parts(body)
+            rc, out = run(['python3', join, bdir, '--check',
+                           '--root', project], ROOT)
+            check('join refuses %s' % label,
+                  rc != 0 and re.search(pattern, out), out[-300:])
+
+        # ---- a malformed part names the file, not the concatenation ----
+        parts(entry('main', 'src/main.py'), "dict(slug='util', nav='u',\n")
+        rc, out = run(['python3', join, bdir, '--check'], ROOT)
+        check('join names the part that does not parse',
+              rc != 0 and '02.py' in out and 'does not parse' in out, out[-300:])
+
+        # ---- an empty set of parts is refused rather than emptying pages.py ----
+        parts()
+        rc, out = run(['python3', join, bdir], ROOT)
+        check('join refuses to empty pages.py from no parts',
+              rc != 0 and open(os.path.join(bdir, 'pages.py'),
+                               encoding='utf-8').read() == joined, out[-300:])
+
+        # Back to the authored three-lesson curriculum for everything after.
+        shutil.rmtree(pdir)
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(before)
+        rc, out = run(['python3', 'build.py'], bdir)
+        check('the site still builds once the parts are gone',
+              rc == 0 and 'BAD: none' in run(['python3', 'check_site.py'], bdir)[1],
+              out[-300:])
+
+        # ---- a list may not hold bare text ----
+        # Found by the stub renderer emitting `</li>.` — invalid, invisible, and
+        # rendered convincingly enough that nobody looked twice.
+        open(os.path.join(bdir, 'content', 'main.html'), 'w').write(
+            '<h2>x</h2>\n<ul>\n<li>one.</li>\ntwo.\n</ul>\n')
+        rc, out = run(['python3', 'build.py'], bdir)
+        rc, out = run(['python3', 'check_site.py'], bdir)
+        check('bare text in a list is reported',
+              rc != 0 and 'only contain <li>' in out, out[-300:])
+        put(good)
+
+        # ---- appendix order comes from pages.py, not the filenames ----
+        z = open(os.path.join(site, 'appendix-zebra.html'), encoding='utf-8').read()
+        a = open(os.path.join(site, 'appendix-alpha.html'), encoding='utf-8').read()
+        check('appendix chain follows pages.py declaration order',
+              'href="appendix-alpha.html"' in z and 'href="index.html"' in z
+              and 'href="appendix-zebra.html"' in a,
+              'zebra should point to alpha; alpha should point to zebra')
+
+        # ---- stale page pruning ----
+        open(os.path.join(site, '99-orphan.html'), 'w').write('<h1>x</h1>')
+        rc, out = run(['python3', 'build.py'], bdir)
+        check('build prunes stale pages',
+              rc == 0 and not os.path.exists(os.path.join(site, '99-orphan.html')),
+              out[-200:])
 
         # ---- escaping survives a round trip ----
         # The fragment is inserted verbatim, so `&lt;int&gt;` stays escaped in the
@@ -321,6 +456,133 @@ def main():
         open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(orig_pages)
         put(good)
 
+        # ---- a declared stub retires the forward reference ----
+        # The same two lessons, in the same order, with the gap declared. This is
+        # the whole point of stubs: what the reader can finish stops being
+        # decided by the order and starts being something the author pays for
+        # explicitly.
+        #
+        # Anchored on the path line, which is unique per entry — all three
+        # entries end with the same `why=`, so anchoring there edits whichever
+        # one comes first and silently tests the wrong lesson.
+        MAIN = "         path='src/main.py', phase='Phase 1 &middot; Core',\n"
+        STORE = "         path='src/store.py', phase='Phase 1 &middot; Core',\n"
+        STUB = ("         stubs=[dict(path='src/util.py',\n"
+                "                     names='AppFailure',\n"
+                "                     real='Phase 1 &middot; Core',\n"
+                "                     note='One class, no behaviour.')],\n")
+        PREVIEW = ("         preview='Run it. Nothing happens yet, but it runs. "
+                   "The <code>catalog</code> stub returns nothing.',\n")
+
+        def with_stub(extra, where=MAIN):
+            out = orig_pages.replace(where, where + extra, 1)
+            check('the stub fixture actually edited pages.py', out != orig_pages)
+            return out
+
+        # The fragments that produced the forward reference above. They are
+        # rewritten here because `put(good)` restored the plain ones, and a
+        # test that passes because the fixture no longer contains the bug is
+        # worse than no test.
+        open(os.path.join(bdir, 'content', 'main.html'), 'w').write(
+            '<h2>The main file</h2>\n'
+            '<pre class="code" data-lang="python"><code>'
+            'class ResultFailure:\n'
+            '    def __init__(self, failure: AppFailure):\n'
+            '        self.failure = failure\n'
+            '</code></pre>\n')
+        open(os.path.join(bdir, 'content', 'util.html'), 'w').write(
+            '<h2>The util file</h2>\n'
+            '<pre class="code" data-lang="python"><code>'
+            'class AppFailure:\n    pass\n'
+            '</code></pre>\n')
+        open(os.path.join(bdir, 'content', 'store.html'), 'w').write(
+            good.replace('util', 'store').replace('The util file', 'The store file'))
+
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(
+            with_stub(PREVIEW + STUB))
+        rc, out = run(['python3', 'build.py'], bdir)
+        rc2, out2 = run(['python3', 'check_site.py'], bdir)
+        check('a declared stub retires the forward reference',
+              rc == 0 and rc2 == 0 and 'AppFailure' not in out2, out2[-400:])
+
+        main_page = open(os.path.join(site, 'main.html'), encoding='utf-8').read()
+        check('preview renders as the payoff line',
+              'What you can see now' in main_page
+              and 'Nothing happens yet, but it runs.' in main_page,
+              'preview missing from the page')
+        check('stubs render as the not-written-yet list',
+              'Not written yet' in main_page
+              and 'src/util.py' in main_page
+              and 'AppFailure' in main_page,
+              'stubs missing from the page')
+        tags, text = parse_tags_and_text(main_page)
+        check('a <code> tag inside preview survives as a tag',
+              'catalog' in text and '&lt;code&gt;' not in main_page,
+              'code tag was escaped instead of honoured')
+        check('the two panels sit above the body, not inside it',
+              main_page.find('Not written yet') < main_page.find('Why this file exists'),
+              'stub panel rendered below the why section')
+
+        # ---- a stub path is escaped like any other prose ----
+        # A path comes from a file someone can edit. Rendering it raw would make
+        # a stray angle bracket a tag, which is the same silent truncation the
+        # escaping invariant exists to prevent. The page shell already carries a
+        # <script>, so the assertion is on the text rather than on the tag set.
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(
+            with_stub("         stubs=[dict(path='src/<b>bold</b>.py',"
+                      " names='AppFailure', note='n')],\n"))
+        rc, out = run(['python3', 'build.py'], bdir)
+        main_page = open(os.path.join(site, 'main.html'), encoding='utf-8').read()
+        tags, text = parse_tags_and_text(main_page)
+        check('a stub path cannot open a tag',
+              rc == 0 and 'src/<b>bold</b>.py' in text and '<b>bold</b>' not in main_page,
+              'path was rendered as markup')
+
+        # ---- an undeclared forward reference is still an error ----
+        # Guards the exemption against being used as a blanket switch-off. It is
+        # per declared name, and only for the names declared.
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(with_stub(
+            "         stubs=[dict(path='src/util.py',\n"
+            "                     names='SomethingElse',\n"
+            "                     note='A different name entirely.')],\n"))
+        rc, out = run(['python3', 'check_site.py'], bdir)
+        check('an undeclared forward reference is still reported',
+              'AppFailure' in out, out[-400:])
+
+        # ---- a stub nobody retires is reported ----
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(with_stub(
+            "         stubs=[dict(path='src/never-written.py',"
+            " names='AppFailure', note='n')],\n"))
+        rc, out = run(['python3', 'check_site.py'], bdir)
+        check('a stub nothing ever replaces is reported',
+              'no lesson ever' in out and 'never-written.py' in out, out[-400:])
+        check('an unretired stub warns rather than failing the build',
+              rc == 0, out[-200:])
+
+        # ---- a stub after the real file is a contradiction ----
+        # Reads fine and builds as nothing: the reader is told to write a
+        # placeholder they have already built. `src/main.py` is step 1, so a
+        # stub naming it from step 3 is backwards.
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(with_stub(
+            "         stubs=[dict(path='src/main.py', names='App',\n"
+            "                     note='Too late.')],\n", STORE))
+        rc, out = run(['python3', 'check_site.py'], bdir)
+        check('a stub declared after the real file is reported',
+              'already writes it' in out and 'src/main.py' in out, out[-400:])
+
+        # ---- a stub with no path is a hard error, not a silent skip ----
+        # Without the path there is nothing to match a later lesson against, so
+        # the stub could never be retired. Failing the build is the only honest
+        # response: there is no default to fall back on.
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(with_stub(
+            "         stubs=[dict(names='AppFailure')],\n"))
+        rc, out = run(['python3', 'build.py'], bdir)
+        check('a stub with no path stops the build and says why',
+              rc != 0 and 'declares a stub with no path' in out, out[-300:])
+
+        open(os.path.join(bdir, 'pages.py'), 'w', encoding='utf-8').write(orig_pages)
+        put(good)
+
         # ---- reordering does not move content between lessons ----
         # This is the bug the whole slug-keying change exists to fix: with
         # fragments named by number, swapping two lessons handed each of them
@@ -422,6 +684,68 @@ def main():
         check('scan is deterministic across runs',
               run(['python3', os.path.join(SCRIPTS, 'scan.py'), dep], ROOT)[1]
               == out or True)
+
+        # ---- the journey order, and what it costs ----
+        # Leaf-first here, because this fixture's entry point imports everything
+        # and nothing imports it — which is the shape that makes the difference
+        # between the two orders legible rather than assumed.
+        rc, out = run(['python3', os.path.join(SCRIPTS, 'scan.py'), dep,
+                       '--journey'], ROOT)
+        jorder = re.findall(r'^\s+\d+\s+(\S+\.py)$', out, re.M)
+        check('--journey starts at the entry point',
+              rc == 0 and jorder and jorder[0] == 'main.py', str(jorder))
+        check('--journey walks outward rather than leaf-first',
+              jorder.index('main.py') < jorder.index('lib/app.py'), str(jorder))
+        check('--journey reports the stub debt it takes on',
+              'Stub debt' in out and 'steps need a placeholder' in out, out[-300:])
+        debt = re.search(r'(\d+) of (\d+) steps need a placeholder', out)
+        check('the debt is counted, not asserted',
+              debt and int(debt.group(1)) >= 1, out[-300:])
+
+        # ---- scan --write produces a draft the toolchain accepts ----
+        # It used to emit `n=` and number-prefixed slugs, both of which the
+        # validators refuse, so the draft could not be pasted in and built
+        # without being hand-edited first. Nothing tested this, which is why it
+        # drifted for as long as it did.
+        rc, out = run(['python3', os.path.join(SCRIPTS, 'scan.py'), dep,
+                       '--write'], ROOT)
+        slugs = re.findall(r"dict\(slug='([^']+)'", out)
+        check('--write emits no stored n=', rc == 0 and 'n=' not in out,
+              out[-300:])
+        check('--write emits no number-prefixed slug',
+              slugs and not any(re.match(r'^\d+[-_]', s) for s in slugs),
+              str(slugs))
+        check('--write emits one slug per file',
+              len(slugs) == len(set(slugs)) == 3, str(slugs))
+        check('--write carries why= so the gap is a placeholder, not an omission',
+              out.count('why=') == 3, out[-300:])
+
+        # And the draft must survive the real builder, not just look right. The
+        # fragments are written from the draft's own slugs, because a draft
+        # that only parses is a draft nobody has proved builds.
+        pages = os.path.join(bdir, 'pages.py')
+        kept = open(pages, encoding='utf-8').read()
+        draft = out[out.index('PAGES = ['):]
+        open(pages, 'w', encoding='utf-8').write(draft)
+        for slug in slugs:
+            open(os.path.join(bdir, 'content', '%s.html' % slug), 'w').write(
+                '<h2>Placeholder</h2>\n<p>Body.</p>\n')
+        rc, out = run(['python3', 'build.py'], bdir)
+        check('a scan --write draft builds unmodified',
+              rc == 0, out[-300:])
+        rc, out = run(['python3', 'check_site.py'], bdir)
+        # Only about the draft's own fields. Orphan fragments are expected here:
+        # the authored lessons' fragments are still on disk while the draft is
+        # installed, and they say nothing about the draft.
+        check('and the validator raises nothing about the draft fields',
+              'has no `why`' not in out and 'unknown data-lang' not in out,
+              out[-400:])
+        open(pages, 'w', encoding='utf-8').write(kept)
+        for slug in slugs:
+            f = os.path.join(bdir, 'content', '%s.html' % slug)
+            if os.path.exists(f):
+                os.remove(f)
+        rc, out = run(['python3', 'build.py'], bdir)
 
         # ---- scan.py is language-agnostic ----
         for lang, fn, ext in (('Rust', 'lib.rs', 'fn main() {}\n'),

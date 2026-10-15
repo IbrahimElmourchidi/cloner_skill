@@ -408,16 +408,104 @@ def analyse(root, skip=None, include=None):
     }
 
 
-def draft_phases(a, max_per_dir, files=None, root=None, use_deps=True):
+def journey_order(teachable, graph, seed):
+    """Breadth-first from the entry points, following what they import.
+
+    The topological sort answers "what has to exist first", which is the right
+    question for a library and the wrong one for an application. In an
+    application the file that runs imports everything, so leaf-first ordering
+    teaches the bottom of the stack for two hundred lessons and the reader does
+    not see the program work until the end.
+
+    A developer does not work that way. They get something on screen, then
+    replace the placeholder underneath it, then get more on screen. That is a
+    breadth-first walk of the import graph starting at the entry point, and
+    this function produces it.
+
+    `seed` is the tie-break, so two scans of an unchanged repository produce the
+    same list. Returns `(order, debt)`, where `debt` is one row per step that
+    reaches for a file taught later: `(index, file, [files to invent])`, worst
+    debt first within a step.
+
+    Almost every step has some. That is not a defect of the walk, it is the
+    bill for choosing it: in a breadth-first order from the entry point, a file
+    is always taught before anything it imports, because what it imports is
+    what sits underneath it. The order is worth that bill precisely because the
+    reader sees the program run early — and only if every one of those rows is
+    declared as a `stubs=` placeholder. An undeclared one is a step that does
+    not compile, which check_site.py reports.
+    """
+    pos = {f: i for i, f in enumerate(seed)}
+    nodes = [f for f in teachable if f in graph]
+    # The graph spans every candidate file, but only `nodes` is being ordered,
+    # and a node's edges can point at a file that was filtered out of the
+    # teaching set — a vendored directory, a skipped test folder. Rank those
+    # last rather than crashing the sort: they are not taught, so where they
+    # would have landed cannot affect the order.
+    rank = lambda f: pos.get(f, len(pos))
+    start = [f for f in nodes if f in ENTRY_SEEDS]
+    if not start:
+        # No entry point matched by name. Fall back to whatever nothing else
+        # depends on, which is the closest honest guess the graph can make.
+        depended = {d for f in nodes for d in graph[f] if d in nodes}
+        roots = [f for f in nodes if f not in depended]
+        start = [min(roots or nodes, key=rank)]
+
+    order, seen = [], set(start)
+    frontier = sorted(start, key=rank)
+    while frontier:
+        cur = frontier.pop(0)
+        order.append(cur)
+        for d in sorted(graph.get(cur, ()), key=rank):
+            if d in nodes and d not in seen:
+                seen.add(d)
+                frontier.append(d)
+
+    # Anything the entry points cannot reach is appended in seed order rather
+    # than dropped: an unreachable file is usually a build script or a second
+    # binary, and dropping it silently loses it from the inventory.
+    order += [f for f in nodes if f not in seen]
+
+    # A stub candidate is a node the walk reached before one of its own
+    # dependencies. Walking depth-first would find many; walking breadth-first
+    # from the entry point finds exactly the place the reader would hit a
+    # missing name, which is the one gap worth naming.
+    at = {f: i for i, f in enumerate(order)}
+    debt = []
+    for i, f in enumerate(order):
+        late = [d for d in graph.get(f, ()) if d in nodes and at[d] > i]
+        if late:
+            # Sorted by how far away the real lesson is, worst first: the debt
+            # that lasts two hundred lessons is the one worth planning for.
+            late.sort(key=lambda d: -at[d])
+            debt.append((i, f, late))
+    return order, debt
+
+
+ENTRY_SEEDS = set()
+
+
+def draft_phases(a, max_per_dir, files=None, root=None, use_deps=True,
+                 journey=False):
     """A draft ordering: setup first, then each source directory in turn.
 
     Seeded by depth then name, so `src/auth` comes before `src/billing` and
     `tests` comes last. Within a directory, smallest first: entry points and
     interfaces tend to be small, and a reader meets the shape before the bulk.
 
-    That seed order is then overridden by the import graph: where B imports A,
-    A is emitted first whatever their directories or sizes. The seed survives as
-    the tie-break so the output stays deterministic between runs.
+    That seed order is then overridden by one of two graphs, chosen by `journey`:
+
+    - **dependency order (default)** — where B imports A, A is emitted first
+      whatever their directories or sizes. Correct for a library. For an
+      application it means teaching the bottom of the stack first and the
+      reader seeing nothing run until the last lesson.
+    - **journey order (`--journey`)** — breadth-first from the entry point,
+      which is the order a developer actually works in. Stub candidates are
+      reported alongside, so the gaps are visible in the draft rather than
+      discovered at build time.
+
+    The seed survives as the tie-break so the output stays deterministic between
+    runs.
     """
     phases = []
 
@@ -448,13 +536,21 @@ def draft_phases(a, max_per_dir, files=None, root=None, use_deps=True):
 
     seed = list(ordered)
     cycles = []
-    if use_deps and files and root:
+    stub_candidates = []
+    if files and root:
         graph, _ = build_graph(files, root)
         teachable = [f for f in seed if f in graph]
-        ranked, cycles = topo_sort(teachable, graph)
-        ranked += [f for f in teachable if f not in ranked]
-        rest = [f for f in seed if f not in teachable]
-        ordered = ranked + rest
+        if journey and teachable:
+            global ENTRY_SEEDS
+            ENTRY_SEEDS = set(a['entries'])
+            ranked, stub_candidates = journey_order(teachable, graph, seed)
+            rest = [f for f in seed if f not in teachable]
+            ordered = ranked + rest
+        elif use_deps and teachable:
+            ranked, cycles = topo_sort(teachable, graph)
+            ranked += [f for f in teachable if f not in ranked]
+            rest = [f for f in seed if f not in teachable]
+            ordered = ranked + rest
 
     phases = []
     last_dir = None
@@ -465,10 +561,11 @@ def draft_phases(a, max_per_dir, files=None, root=None, use_deps=True):
             phases.append(('Phase %d &middot; %s' % (n, d), []))
             last_dir = d
         phases[-1][1].append(f)
-    return phases, cycles
+    return phases, cycles, stub_candidates
 
 
-def emit(a, phases, out, cycles=()):
+def emit(a, phases, out, cycles=(), journey=False, stubs=()):
+    """`stubs` is the debt table from journey_order: (index, file, [to invent])."""
     w = out.write
     w('%s\n' % a['root'])
     w('=' * (len(a['root']) + 2) + '\n\n')
@@ -499,11 +596,50 @@ def emit(a, phases, out, cycles=()):
         w('\n')
 
     w('Draft step order\n----------------\n\n')
-    w('Sorted by the real import graph, so a module comes after everything it\n'
-      'depends on. Where two files have no dependency between them the order is\n'
-      'by directory, then by size. It is a draft: it cannot tell you which files\n'
-      'deserve a lesson, and it does not know that a reader needs the domain\n'
-      'before the wiring. Read it, and argue with it.\n\n')
+    if journey:
+        w('Breadth-first from the entry points, so a reader gets something that\n'
+          'runs early and replaces what is underneath it as they go. That is the\n'
+          'order a developer works in, not the order the import graph is\n'
+          'readable in. Where two files have no dependency between them the\n'
+          'order is by directory, then by size, so two scans of an unchanged\n'
+          'repository produce the same list. It is a draft: it cannot tell you\n'
+          'which files deserve a lesson, and it knows nothing about which ones\n'
+          'are worth the reader\'s time. Read it, and argue with it.\n\n')
+        if stubs:
+            total = sum(len(row[2]) for row in stubs)
+            deepest = max(len(row[2]) for row in stubs)
+            w('Stub debt\n---------\n\n')
+            w('This order reaches the entry point first and works outward, so a\n'
+              'step almost always reaches for a file taught later. That is the price\n'
+              'of the order, not a defect in it, and it is only affordable if every\n'
+              'one of those placeholders is declared in `stubs=` on the lesson that\n'
+              'uses it. An undeclared one is a step the reader cannot finish —\n'
+              'check_site.py reports it.\n\n')
+            w('A step needing a dozen or more is not a step to teach here. It is a\n'
+              'dependency-wiring file — a DI module, a router, a bootstrap — and\n'
+              'the usual answer is to leave the whole file stubbed behind one\n'
+              'placeholder and teach it near the end, when the things it wires\n'
+              'already exist. Judge each one; the count is the cost, not the plan.\n\n')
+            w('  %d of %d steps need a placeholder; %d placeholders in total, at\n'
+              '  worst %d on a single step.\n\n'
+              % (len(stubs), sum(len(f) for _, f in phases), total, deepest))
+            w('  %5s  %-58s %s\n' % ('step', 'file', 'invent now, real lesson at'))
+            for i, f, late in stubs[:25]:
+                far = len(late) - 1
+                w('  %5d  %-58s %d placeholders%s\n'
+                  % (i + 1, f[:58], len(late),
+                     ', furthest +%d steps' % far if far else ', next step'))
+            if len(stubs) > 25:
+                w('\n  ... and %d more steps with a placeholder to declare.\n'
+                  % (len(stubs) - 25))
+            w('\n')
+    else:
+        w('Sorted by the real import graph, so a module comes after everything it\n'
+          'depends on. Where two files have no dependency between them the order is\n'
+          'by directory, then by size. It is a draft: it cannot tell you which files\n'
+          'deserve a lesson, and it does not know that a reader needs the domain\n'
+          'before the wiring. Read it, and argue with it. For an application, try\n'
+          '--journey, which starts at the entry point instead.\n\n')
     if cycles:
         w('Import cycles found (%d) — ordered by seed, and worth saying so on the\n'
           'later page of each pair, because a reader who hits a mutual import\n'
@@ -522,24 +658,58 @@ def emit(a, phases, out, cycles=()):
 
 
 def to_pages(phases, name):
-    """A pages.py-shaped draft, for pasting in as a starting point."""
+    """A pages.py-shaped draft, for pasting in as a starting point.
+
+    Written in the shape the toolchain now expects, which means two things a
+    number-prefixed draft used to get wrong: no `n=`, because the step number is
+    derived from position and a stored one that disagrees stops the build; and
+    no number in the slug, because a slug that encodes its step number stops
+    matching it the moment a lesson is inserted, and nothing reports that.
+    Both used to be emitted here while the validators refused them, so the draft
+    could not be pasted into a site and built without editing it first.
+    """
     w = sys.stdout.write
-    w('# Draft generated by scan.py. Every field except n/slug/path is a\n'
-      '# placeholder — replace nav, h1, lead and why with real prose.\n')
+    w('# Draft generated by scan.py. Every field except slug and path is a\n'
+      '# placeholder — replace nav, h1, lead, why and preview with real prose.\n'
+      '# For a large curriculum, split these into _build/_parts/NN.py and let\n'
+      '# join.py assemble them rather than pasting hundreds of entries at once.\n')
     w('PAGES = [\n')
     step = 0
+    taken = set()
     for phase, files in phases:
         for f in files:
             step += 1
-            slug = '%02d-%s' % (step, re.sub(r'[^a-z0-9]+', '-', f.lower())
-                                .strip('-')[:60].rstrip('-'))
-            w('    dict(n=%d, slug=%r,\n' % (step, slug))
+            slug = slug_for(f, taken)
+            w('    dict(slug=%r,\n' % slug)
             w('         nav=%r,\n' % os.path.basename(f))
             w('         h1=%r,\n' % os.path.basename(f))
             w('         lead=\'TODO\',\n')
             w('         path=%r,\n' % f)
-            w('         phase=%r),\n' % phase)
+            w('         phase=%r,\n' % phase)
+            w('         why=\'TODO\'),\n')
     w(']\n\nAPPENDIX = []\nTOTAL_STEPS = len(PAGES)\n')
+
+
+def slug_for(path, taken):
+    """A slug from a source path: no number prefix, and never a duplicate.
+
+    The prefix is what makes a slug wrong: `01-main` looks tidy in a draft and
+    is a lie the moment a lesson is inserted, because the filename, the URL and
+    the saved-progress key all stay valid and all now name the wrong step.
+
+    Deduping matters for the same reason the prefix is dropped — several source
+    paths can flatten to one slug, and a repeated slug is a repeated filename.
+    """
+    base = re.sub(r'[^a-z0-9]+', '-', path.lower()).strip('-')[:60].rstrip('-')
+    if not base:
+        base = 'file'
+    slug, n = base, 2
+    while slug in taken:
+        suffix = '-%d' % n
+        slug = base[:60 - len(suffix)].rstrip('-') + suffix
+        n += 1
+    taken.add(slug)
+    return slug
 
 
 def main():
@@ -556,6 +726,12 @@ def main():
                          'built-in list rather than adding to it.')
     ap.add_argument('--no-deps', action='store_true',
                     help='keep the directory/size order and skip the import sort')
+    ap.add_argument('--journey', action='store_true',
+                    help='order breadth-first from the entry point instead of '
+                         'leaf-first, and report the files that order reaches '
+                         'before their own dependencies (the stub candidates). '
+                         'Use this for an application; the default is better '
+                         'for a library.')
     ap.add_argument('--include', action='append', default=[], metavar='DIR',
                     help='re-enable a directory that is skipped by default, '
                          'e.g. --include docs (repeatable)')
@@ -569,8 +745,9 @@ def main():
     skip = set(args.skip) if args.skip else None
     a = analyse(root, skip, set(args.include))
     allfiles = list(walk(root, skip or set(), set(args.include)))
-    phases, cycles = draft_phases(a, args.max_per_dir, allfiles, root,
-                                  use_deps=not args.no_deps)
+    phases, cycles, stubs = draft_phases(a, args.max_per_dir, allfiles, root,
+                                         use_deps=not args.no_deps,
+                                         journey=args.journey)
 
     if args.json:
         print(json.dumps({k: v for k, v in a.items()
@@ -578,7 +755,7 @@ def main():
     elif args.write:
         to_pages(phases, a['root'])
     else:
-        emit(a, phases, sys.stdout, cycles)
+        emit(a, phases, sys.stdout, cycles, journey=args.journey, stubs=stubs)
     return 0
 
 

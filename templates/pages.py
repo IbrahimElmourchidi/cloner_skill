@@ -11,6 +11,15 @@ fragment is keyed by the slug, and the read-tracking key is the slug too. An
 than a silent correction, because two things disagreeing about the order is the
 bug this design exists to remove.
 
+**Order by journey, not by the import graph.** The order a developer works in
+is the order a reader wants: something that runs, then the piece underneath it,
+then the next piece. The import graph disagrees, because in most codebases the
+thing that runs is the thing that imports everything. Rather than follow the
+graph and end up teaching the entry point last, put the file where a developer
+would put it and declare what the reader has to invent to make it compile —
+`stubs=` below, `preview=` for what they get to see. The dependency sort is
+still right *within* a slice; it is only the wrong axis for the spine.
+
 One lesson = one PAGES entry = one `_build/content/<slug>.html` fragment.
 
 Fields (only slug, nav, h1 and lead are required):
@@ -28,6 +37,31 @@ Fields (only slug, nav, h1 and lead are required):
                   validator names, not a shorthand.
     cmd    str    Shell command to run. Prefix with `$ ` to get a prompt.
     phase  str    Sidebar section heading. Defaults to config default_phase.
+    preview str   What the reader can see after this step that they could not
+                  see before. One or two sentences, plain, present tense — the
+                  payoff line. Strongly wanted on any step that makes the
+                  project *do* something rather than merely compile: it is the
+                  only thing on the page that distinguishes "wires up a screen"
+                  from "renames a helper". `<code>` is honoured; everything
+                  else is escaped.
+    stubs  list   Placeholders the reader has to invent for this step to
+                  compile, each a dict:
+                      path  str   the file that does not exist yet. Required —
+                               it is matched against later lessons' own `path=`
+                               to decide whether the stub was ever retired.
+                      names str   the type names that placeholder must define,
+                               comma separated. These are exempt from the
+                               forward-reference check, which is the whole
+                               point: it is how an outcome-first order is
+                               possible at all.
+                      real  str   where the real file lands, e.g. a phase name.
+                      note  str   what the placeholder does for now.
+                  A bare string is accepted as `{path: ...}`. A stub is
+                  metadata, not a lesson, so the same path is never taught
+                  twice and sync.py stays unambiguous. Every stub must be
+                  replaced by a *later* lesson carrying that path, or the
+                  validator reports it: a placeholder nobody replaces is a
+                  placeholder taught as the answer.
     why    str    Why this file exists, in plain English — the section that
                   leads the page, before the code. Inserted raw, so it may
                   contain markup such as a <figure class="diagram">.

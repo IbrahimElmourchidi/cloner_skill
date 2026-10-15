@@ -85,6 +85,10 @@ EMOJI = re.compile('[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F000-\U0001
 # bullets a strict parser objects to — while the fault is real. Assistive
 # technology is handed a broken list. Groups now render as <details>, so a
 # heading can only reappear here if someone hand-writes one into the markup.
+#
+# Bare text is the same fault reached from the other side, and it is what a
+# generated panel gets wrong: one full stop written after a `</li>` lands as a
+# loose character in the list, renders convincingly, and is invalid.
 HEADINGS = {'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}
 LIST_TAGS = {'ol', 'ul'}
 
@@ -226,6 +230,13 @@ class P(HTMLParser):
             # Only the text between <pre> and <code> is markup-free source.
             self.pre_depth += _brace_delta(data)
             self.pre_text += data
+        # A list's content model is <li> and nothing else. A stray character —
+        # a full stop after a closing </li>, a comma between two items — is
+        # invalid, and it renders as if it were meant, which is how a
+        # generated panel can put one in and never notice.
+        if data.strip() and self.stack and self.stack[-1][0] in LIST_TAGS:
+            self._err('bare text %r is a direct child of <%s>, which may only '
+                      'contain <li>' % (data.strip()[:24], self.stack[-1][0]))
         m = EMOJI.search(data)
         if m:
             self._err('emoji %r in text' % m.group(0))
@@ -640,14 +651,63 @@ def unescape_code(block):
     return block.replace('&nbsp;', ' ')
 
 
+_page_stubs = None
+
+
+def page_stubs(p):
+    """`build.stubs_of` for one PAGES entry, imported on first use.
+
+    Importing build at module scope would turn a missing or half-written
+    pages.py into a traceback before main() has a `bad` list to report it on.
+    Every check that needs build imports it inside the function that needs it,
+    for that reason. Two of them now need `stubs_of` as well, so the lookup is
+    cached here rather than repeated — a module-level `from build import …`
+    inside a function would bind a *local* name, which is exactly the bug this
+    wrapper exists to prevent.
+    """
+    global _page_stubs
+    if _page_stubs is None:
+        sys.path.insert(0, HERE)
+        from build import stubs_of
+        _page_stubs = stubs_of
+    return _page_stubs(p)
+
+
+def stubbed_names(p):
+    """Type names this lesson declares it is stubbing.
+
+    Read out of `stubs=[dict(..., names='A, B')]` rather than out of a code
+    block, because a stub is metadata: the placeholder is something the reader
+    writes by hand and is never transcribed on the page. The lesson's own
+    fragment names those types, which is how the reader knows what the
+    placeholder has to define.
+    """
+    out = set()
+    for s in page_stubs(p):
+        for part in re.split(r'[,\s]+', s.get('names') or ''):
+            name = part.strip()
+            if len(name) > 2 and name[0].isupper():
+                out.add(name)
+    return out
+
+
 def dependency_order(bad, warn):
-    """No lesson may use a name that a LATER lesson defines.
+    """No lesson may use a name that a LATER lesson defines — unless the lesson
+    declares that name in `stubs=`.
 
     The lesson order is the site's spine: a reader follows it and writes each
     file as they go. A step that references a class introduced three steps
     later is not a reading inconvenience, it is a step that cannot be
     completed — the code does not compile at the point the reader is told to
     write it.
+
+    The exception is a declared stub. A journey-ordered site deliberately
+    reaches for something that does not exist yet, and the author's answer is
+    `stubs=[dict(names='HomeFeedType', …)]` — "the reader invents this
+    placeholder, and a later lesson replaces it". That is a real answer, and it
+    is the only thing that makes an outcome-first order possible at all. What it
+    must not become is the default: an undeclared forward reference is still the
+    error it always was, because the reader has no way to know what to write.
 
     This is a heuristic and says so. It collects names each lesson's code block
     defines, then reports any name an earlier lesson *uses* that only a later
@@ -663,40 +723,87 @@ def dependency_order(bad, warn):
         bad.append('cannot import build/pages (%s) — dependency order skipped' % exc)
         return
 
-    order, first_use = [], {}
+    order = []
     for p in PAGES:
         frag = os.path.join(CONTENT, '%s.html' % p['slug'])
         if not os.path.exists(frag):
             continue
         with open(frag, encoding='utf-8') as f:
             text = '\n'.join(unescape_code(b) for b in code_blocks(f.read()))
-        defines = declared_names(text)
-        uses = {i for i in IDENT.findall(text)} - defines
-        for name in sorted(uses):
-            if name not in first_use:
-                first_use[name] = p['n']
-        order.append((p['n'], p['slug'], defines))
+        order.append((p['n'], p['slug'], declared_names(text),
+                      stubbed_names(p)))
 
     later = {}
-    for n, slug, defines in order:
+    for n, slug, defines, _ in order:
         for name in defines:
             later.setdefault(name, n)
 
     out = warn if not STRICT else bad
-    for n, slug, defines in order:
+    for n, slug, defines, stubbed in order:
         frag = os.path.join(CONTENT, '%s.html' % slug)
         if not os.path.exists(frag):
             continue
         with open(frag, encoding='utf-8') as f:
             text = '\n'.join(unescape_code(b) for b in code_blocks(f.read()))
-        uses = {i for i in IDENT.findall(text)} - declared_names(text)
+        uses = {i for i in IDENT.findall(text)} - declared_names(text) - stubbed
         for name in sorted(uses):
             born = later.get(name)
             if born is not None and born > n:
                 out.append('content/%s.html: step %d uses %s, which is not '
-                           'defined until step %d — move that lesson earlier '
-                           'or teach %s before anything that needs it'
+                           'defined until step %d — move that lesson earlier, '
+                           "list %s in this lesson's stubs=, or teach it "
+                           'before anything that needs it'
                            % (slug, n, name, born, name))
+
+
+def stubs_are_retired(bad, warn):
+    """Every stub must be replaced by a later lesson that writes the same path.
+
+    A stub is a debt, and a debt nobody pays ends up teaching a placeholder as
+    though it were the answer. Retirement needs no bookkeeping field: a stub is
+    retired the moment some later entry carries that path in its own `path=`,
+    which is what makes the mechanism safe to rely on rather than to maintain.
+
+    Two ways to fail, and they are different mistakes:
+
+    - declared and never replaced, because the real file was left out of the
+      curriculum entirely;
+    - replaced *earlier* than the stub, which means the order is wrong — the
+      reader gets the real file and then a stub asking for the same path.
+
+    The second is the one that reads as fine and builds as nothing.
+    """
+    try:
+        sys.path.insert(0, HERE)
+        from build import PAGES
+    except Exception as exc:
+        bad.append('cannot import build/pages (%s) — stub check skipped' % exc)
+        return
+
+    written = {}
+    for p in PAGES:
+        if p.get('path'):
+            written.setdefault(p['path'], p['n'])
+
+    out = warn if not STRICT else bad
+    for p in PAGES:
+        for s in page_stubs(p):
+            path, at = s['path'], p['n']
+            later_at = written.get(path)
+            if later_at is None:
+                out.append(
+                    'pages.py: step %d (%s) stubs %s, but no lesson ever '
+                    'writes that path. The reader would be left holding a '
+                    'placeholder and never told what replaced it — teach the '
+                    'real file, or drop the stub.'
+                    % (at, p['slug'], path))
+            elif later_at <= at:
+                out.append(
+                    'pages.py: step %d (%s) stubs %s, but step %d already '
+                    'writes it. A stub that comes after the real file is dead '
+                    'weight, and asking the reader for a placeholder they have '
+                    'already built reads as a contradiction.'
+                    % (at, p['slug'], path, later_at))
 
 
 def file_block_is_whole(bad, warn):
@@ -810,6 +917,7 @@ def main():
                 langs |= set(p.langs)
 
     dependency_order(bad, warn)
+    stubs_are_retired(bad, warn)
     file_block_is_whole(bad, warn)
     why_is_present(bad, warn)
 

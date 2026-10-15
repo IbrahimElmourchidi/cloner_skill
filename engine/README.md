@@ -47,9 +47,15 @@ Nothing in the project is code, so there is nothing there to fork.
 | `check-svg` | no | |
 | `scan` | no | |
 | `init` | no | |
+| `scan --journey` | no | the journey order and its stub-debt report are Python-only |
 
 `bin/clone-site` still dispatches to the Python engine. It has deliberately not
 been pointed at this binary, because the binary cannot yet build a whole site.
+
+It also implements the **v1 data format**, not v2 — stored `n`, number-prefixed
+slugs, TOML. `preview` and `stubs` have been added in the v1 shape; see
+[below](#preview-and-stubs-and-what-the-port-still-owes) for what that does and
+does not buy.
 
 ## What has been verified, and how
 
@@ -147,6 +153,40 @@ must never mishandle is the one that makes it stop.
     string. The reference site's fork had already corrected this by hand.
   - **`nav` escaped consistently.** The Python escaped it in the appendix
     sidebar and not the lesson sidebar.
+
+### `preview` and `stubs`, and what the port still owes
+
+The Python engine grew two fields in v2.1: `preview` (what the reader can see
+after a step that they could not see before) and `stubs` (the placeholders the
+reader must invent for that step to compile, which is what makes a
+journey-ordered curriculum possible at all). Both are ported here —
+`preview` and `stubs` in `src/model.rs`, their rendering in `src/build.rs` — and
+both are covered by unit tests.
+
+They were ported **in the v1 data shape**, which is worth being explicit about
+because it is the only part of v2.1 this engine has:
+
+| | this engine | Python, shipped path |
+|---|---|---|
+| config | `config.toml` | `config.py` |
+| page list | `pages.toml` | `pages.py` |
+| step number | stored, `n = 3` | derived from list position |
+| fragment | `content/NN.html` | `content/<slug>.html` |
+| slug | `01-first-file`, prefix enforced | `first-file`, no prefix |
+| stub retirement | not checked | `stubs_are_retired` |
+| forward reference | not checked | `dependency_order`, honours stubs |
+
+So the fields render here and nothing checks them. `stubs` in particular is
+half a feature without its other half: a stub that is never paid off is a
+placeholder taught as the answer, and only the Python validator says so.
+
+**Nothing here needs migrating from the Python side.** `preview` and `stubs` are
+additive with safe defaults, and a `pages.toml` that omits both builds exactly
+as before. Finishing this engine is the other direction: it has to move to the
+v2 data format and then pick up the three staged checks (`dependency_order`,
+`file_block_is_whole`, `why_is_present`), none of which have a counterpart here.
+The `474 fragments agree` harness is built on v1 filenames and has to be rebuilt
+as part of that, not before it.
 
 ## Building
 

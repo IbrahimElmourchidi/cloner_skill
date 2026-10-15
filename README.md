@@ -1,8 +1,9 @@
 # cloner_skill
 
 An AI skill that turns any software repository into a step-by-step teaching
-site: one static HTML page per source file, in dependency order, each carrying
-the real file contents and a plain assessment of whether its choices are good.
+site: one static HTML page per source file, in the order a developer actually
+works, each carrying the real file contents and a plain assessment of whether
+its choices are good.
 
 No framework, no build step to view it, no network. Open `index.html` from disk.
 
@@ -116,12 +117,83 @@ number is derived from each entry's position in `pages.py`. Reordering is
 therefore a move within one list — no renumbering, no renaming, and no reader's
 saved progress invalidated.
 
+## Journey order, and what it costs
+
+The order of `pages.py` is the order a developer works in, which for an
+application is *not* the order the import graph is readable in. The file that
+runs imports everything, so a leaf-first sort teaches the bottom of the stack
+first and the reader sees nothing work for two hundred lessons.
+
+So the reader gets the entry point first, and what sits underneath it is
+stubbed until its turn comes. Two fields carry that:
+
+```python
+dict(slug='home-grid', nav='the product grid',
+     path='lib/features/home/widgets/product_grid.dart',
+     preview='Run it. Home shows four tabs, each with three grey cards.',
+     stubs=[dict(path='lib/catalog/domain/usecases.dart',
+                 names='CatalogUsecase, HomeFeedType',
+                 real='Phase 4 &middot; Catalog domain',
+                 note='Every method returns an empty list.')]),
+```
+
+`preview` is the payoff line — what the reader can see now that they could not
+see before. `stubs` declares the placeholders the reader has to invent, and the
+names in it are exempt from the forward-reference check.
+
+Two things are enforced, and both are mechanical:
+
+- **Declare it or do not do it.** An undeclared forward reference is still
+  reported, naming both lessons. A stub is the reader being told what to write;
+  without it they meet a compile error and a type name.
+- **Every stub is retired.** A *later* lesson must carry that same `path=`.
+  There is no `retired=` field — retirement is matched against later `path=`
+  values, so a placeholder nobody pays off is reported rather than remembered.
+
+`scan.py --journey` produces the draft order and prints the debt per step, so
+the price is visible before it is paid. A step needing a dozen or more
+placeholders is a DI module or a router in disguise; the answer there is to stub
+the whole file behind one placeholder and teach it near the end.
+
+## A curriculum too big to hold in one edit
+
+Past about forty lessons, `pages.py` stops being a file you can work on: a few
+hundred `dict(...)` entries is sixty kilobytes, and the only way to change lesson
+40 is to read and rewrite all of it. That is how a curriculum gets re-emitted
+from a stale copy and loses a lesson, with the build green and the validator
+green throughout.
+
+So write it in parts and let `join.py` assemble it:
+
+```bash
+scripts/join.py ~/code/my-project/docs/site/_build --check --root ~/code/my-project
+scripts/join.py ~/code/my-project/docs/site/_build --root ~/code/my-project
+```
+
+```
+_build/_parts/01.py     dict(slug='manifest', …),
+                       dict(slug='entry-point', …),
+_build/_parts/02.py     dict(slug='the-router', …),
+```
+
+The result is still one list, and no downstream script can tell. `pages.py`
+becomes **derived** — edit the parts, not the file — while everything outside
+`PAGES = [...]` is preserved byte for byte, including the hand-edited
+`APPENDIX`. `join.py --split N` goes the other direction if you want to back
+out.
+
+It refuses the things that are silent otherwise: an unpadded part filename
+(`part10.py` sorts before `part2.py`, moving ninety lessons), a duplicate slug,
+a duplicate `path`, a stored `n=`, a missing `why`, and — with `--root` — a
+`path` that is not in the repository.
+
 ## The commands
 
 | Command | Does |
 |---|---|
 | `bootstrap.py PROJECT --name NAME` | Copies the generator in, writes a config, builds, and validates. Exits non-zero if the result is not valid. |
-| `scan.py PROJECT` | Inventories the repo: languages, line counts, manifests, entry points, and a draft step order sorted by the real import graph. `--json`, `--write`, `--no-deps`, `--skip DIR`, `--include DIR` |
+| `scan.py PROJECT` | Inventories the repo: languages, line counts, manifests, entry points, and a draft step order. `--journey` orders breadth-first from the entry points and prints the stub debt each step takes on; the default sorts leaf-first by the import graph. `--json`, `--write`, `--no-deps`, `--skip DIR`, `--include DIR` |
+| `join.py BUILD_DIR` | Assembles a large curriculum from `_build/_parts/NN.py` into `pages.py`, which becomes derived. `--check` validates without writing, `--root DIR` confirms every `path=` exists, `--split N` goes the other direction. |
 | `build.py` | Renders `pages.py` + `content/` into pages. Prunes stale ones. `--incremental` rewrites only the pages whose fragment changed. |
 | `sync.py` | Compares the site against the repository: what was added, modified, renamed, deleted. Dry run by default. `--apply`, `--root DIR`, `--yes` |
 | `index.py` | Regenerates `index.html`. |

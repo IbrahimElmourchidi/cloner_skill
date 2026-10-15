@@ -6,8 +6,12 @@ to read the repository and decide what a reader needs, in what order, and why.
 
 - [The one rule](#the-one-rule)
 - [Reordering is moving a line](#reordering-is-moving-a-line)
+- [Writing it in parts](#writing-it-in-parts)
 - [Phases](#phases)
-- [Ordering within a phase](#ordering-within-a-phase)
+- [Order the spine by journey, not by the import graph](#order-the-spine-by-journey-not-by-the-import-graph)
+- [Pay for it with stubs](#pay-for-it-with-stubs)
+- [Ordering within a slice](#ordering-within-a-slice)
+- [Finding the journey](#finding-the-journey)
 - [Files that do not make good lessons](#files-that-do-not-make-good-lessons)
 - [File sizes that do not make good lessons](#file-sizes-that-do-not-make-good-lessons)
 - [Cross-references](#cross-references)
@@ -51,6 +55,80 @@ The lesson is that a number used as a *display* value should not also be a
 *storage key*. Once the two share a field, every future edit has to remember
 that it is editing two things at once.
 
+## Writing it in parts
+
+A curriculum is one list of `dict(...)` entries, and it is the only artefact in
+`_build/` that cannot be written incrementally. Everything else here is small: a
+fragment, a config, a script. A 300-step `pages.py` is about sixty kilobytes,
+produced in a single pass, before any lesson exists, by the step whose whole job
+is to hold the shape of the site in mind at once.
+
+That works up to a point and then quietly stops. The failure is not a crash. It
+is that changing lesson 40 means reading and rewriting the entire file — which is
+how a curriculum gets re-emitted from a slightly stale copy, and how one entry
+goes missing with nothing reporting it, because the build is green and the
+validator is green and the site is one lesson short of what it was.
+
+**Above about forty lessons, write the lessons as parts.**
+
+```bash
+$SKILL/scripts/join.py ~/code/proj/docs/site/_build --check --root ~/code/proj
+$SKILL/scripts/join.py ~/code/proj/docs/site/_build --root ~/code/proj
+```
+
+`_build/_parts/01.py`, `02.py`, `03.py`… each a run of `dict(...)` entries and
+nothing else. `join.py` concatenates them in filename order and writes
+`pages.py`. The result is still one list; nothing downstream — `build.py`,
+`check_site.py`, `sync.py`, `index.py`, `menu.py` — can tell that it was
+assembled. No downstream script changed.
+
+What `join.py` preserves, and this is the part that matters:
+
+- **Everything outside `PAGES = [...]`**, byte for byte. The docstring documenting
+  every field, and the `APPENDIX` below the list. `APPENDIX` is hand-edited
+  occasionally by somebody with no reason to know a parts directory exists, and
+  joining a curriculum must never disturb it.
+- **Your formatting.** Parts are copied verbatim, comments and all. Reformatting
+  would be a kindness with a large bill: every rebuild would fight you over
+  whitespace, and your comments marking a decision would be thrown away.
+- **Nothing else.** A file not called `NN.py`, or starting with `_`, is skipped.
+
+What it refuses, because each of these is silent otherwise:
+
+| Refused | Why |
+|---|---|
+| a part filename that is not zero-padded | `part10.py` sorts before `part2.py`, which moves ninety lessons with no other symptom |
+| two entries with one `slug` | the second page overwrites the first's progress marker |
+| two entries with one `path` | one lesson is one file; the reader writes it twice |
+| a stored `n=` | derived from position; one that disagrees stops the build |
+| a missing `why` | found at step 40 of a batch costs a whole batch |
+| a `path` that is not in the repository (`--root`) | a typo here is invisible until someone tries to follow the site |
+| a value that is not a literal | `pages.py` is read by name, so a computed value is one nobody can see |
+
+### `pages.py` becomes derived
+
+That is the whole trade. Once the parts exist, `pages.py` is an **output** — edit
+the parts, not the file. It is the only rule this adds, and it is worth stating
+plainly because it is the one that catches people out: someone reads `pages.py`,
+sees the change they want to make, makes it, and the next `join.py` silently
+takes it back.
+
+`--split N` goes the other direction — it explodes `pages.py` into parts of `N`
+entries and leaves `pages.py` alone, so adopting or abandoning the split is
+reversible. It is a structural change, not a reformat: comments *between* entries
+are dropped, because they belong to a file that no longer exists.
+
+### How big is too big
+
+Not a lesson count, a **file size**. Roughly 40 entries in one `pages.py` is
+about eight kilobytes, which is comfortable to read and rewrite in one go. Past
+that, every edit is a whole-file rewrite, and a whole-file rewrite of a
+hand-curated list is how lessons go missing.
+
+Split at a phase boundary where you can, so each part is a coherent run and the
+filename still means something. Beyond that, `join.py` does not care how you
+cut it — but you will.
+
 ## Phases
 
 A phase is a sidebar heading. It gives a long site structure, so a reader at
@@ -75,60 +153,186 @@ A workable default, for any project:
 Adjust it. A library has no UI phase. A monorepo might want one phase per
 package. A script might be five lessons and need no phases at all.
 
-## Ordering within a phase
+## Order the spine by journey, not by the import graph
 
-**Sort by dependency, and the direction is always leaf first.** A file should
-come after everything it depends on. `utils.ts` before `api.ts`, `schema`
-before `repository`, `types` before anything that imports them.
+**Sort by what the developer does, not by what imports what.**
 
-`scan.py` does this for you: it reads the import lines, builds the graph over
-the files it is teaching, and topologically sorts them, keeping the
-directory/size order as the tie-break so two scans of an unchanged repository
-produce the same list. Pass `--no-deps` to see the raw directory order instead —
-useful precisely because it is what you are arguing against.
+A developer opening an application does something a topological sort cannot
+predict: they get something on screen first. `main.dart` before the router
+before the data layer, with the catalogue stubbed to return nothing, so the home
+page renders grey cards on step four. Then they come back and grow the catalogue
+while watching the screen fill in.
 
-**The sort is necessary and not sufficient.** It knows that `b.py` imports
-`a.py`. It does not know that a reader needs the domain before the wiring, or
-that two files are more useful together, or that one of them deserves no lesson
-at all. Read the result and argue with it.
+Leaf-first ordering gives them the opposite, and it is a bad experience. In most
+applications the file that runs imports everything, so a topological sort puts it
+last — which means lesson one is a leaf with no idea what it is for, and the
+reader sees nothing work for two hundred lessons. Every step compiles. Nothing
+happens.
 
-How to establish the order when you want to go beyond the automatic sort:
+The sort is not wrong, it is answering the wrong question. "What has to exist
+first" is the right question for a library. For an application the right question
+is "what can I see first", and those two orders have almost nothing in common.
 
-1. **Find the entry point** and work backwards. `scan.py` flags likely ones by
-   name (`main.py`, `index.ts`, `main.rs`, `wsgi.py`, `urls.py`…). The file that
-   imports everything is usually last.
-2. **Follow the imports** one level at a time. The script has already done the
-   mechanical part; this is for the judgement calls — whether a directory is a
-   phase boundary, whether an import is load-bearing or incidental.
-3. **Break cycles by judgement.** Mutual imports exist and are legal in most of
-   these languages, so the sort emits them in seed order rather than refusing.
-   Put the lower-level file first and note the cycle on the later page — a
-   reader who hits it deserves to know the author saw it too. `scan.py` lists
-   the cycles it found.
+**This is the load-bearing decision in the whole curriculum.** Everything else —
+phases, slugs, page shape — is a consequence of it. Get the spine right and the
+rest is bookkeeping; get it wrong and no amount of good prose makes lesson one
+worth reading.
 
-Where a phase has no dependencies at all (a folder of independent components),
-sort alphabetically so the order is predictable and reproducible.
+### The price, stated up front
+
+Journey order means the reader compiles a file that imports something they do not
+have yet. That is not a bug you can design away; it is the order working as
+intended. What you can do is make the gap **explicit**, which is what
+[stubs](#pay-for-it-with-stubs) are for.
+
+The measure of a good journey order is not that it compiles — it is that the
+reader sees the program do something early, and never meets a gap they were not
+told about.
+
+### When leaf-first is still right
+
+Not every project is an application.
+
+- **A library.** Its entry point *is* a leaf. Order by dependency and nothing is
+  compromised.
+- **A CLI with a real pipeline.** `parse → transform → emit` is a dependency
+  chain a reader would follow anyway.
+- **Generated code.** Protoc output has a genuine topological order and no
+  meaningful "what the reader sees".
+
+The test is whether there is a thing on screen — or in stdout — that changes
+when a file changes. If yes, journey order. If the program's output is a pure
+function of its inputs with no intermediate observable state, dependency order
+and the stub machinery is dead weight.
+
+## Pay for it with stubs
+
+A stub is the reader's placeholder. It is declared on the lesson that needs it,
+not taught as a lesson of its own:
+
+```python
+dict(slug='home-product-grid', nav='the product grid',
+     path='lib/features/home/widgets/product_grid.dart',
+     preview='Run it. Home shows four tabs, each with three grey cards.',
+     stubs=[dict(path='lib/features/catalog/domain/usecases/catalog_usecases.dart',
+                 names='CatalogProductsUsecase, HomeFeedType',
+                 real='Phase 4 &middot; Catalog domain',
+                 note='Three methods, every one returns an empty list.')]),
+```
+
+Four fields. `path` is required — it is the file the reader has to invent, and it
+is matched against later lessons to decide whether the stub was ever retired.
+`names` are the types the placeholder must define, and they are exempt from the
+forward-reference check, which is the entire point of the mechanism. `real` says
+where the real file lands, so the reader knows this is temporary. `note` says
+what the placeholder does meanwhile, which is usually the only interesting thing
+about it: "returns an empty list" is a design decision, and saying so turns a
+placeholder into a lesson.
+
+Three rules, and `check_site.py` holds all of them:
+
+- **Declare it or don't do it.** An undeclared forward reference is still an
+  error. A stub is the author telling the reader what to write; without it they
+  meet a compile error and a type name and nothing else.
+- **Every stub is retired.** A later lesson must carry that same `path=`. There
+  is no `retired=` field: retirement is matched against later `path=` values, so
+  a stub nobody pays off is *reported*, not remembered.
+- **A stub comes before the real file, never after.** Pointing the reader at a
+  placeholder they have already built is a contradiction, and the validator
+  names it.
+
+And set `preview` on every step that changes what the reader can see. It is the
+one line that makes a journey order legible: without it, a lesson that wires up a
+screen and a lesson that renames a helper look identical from the outside, and a
+reader who followed the order has no way to tell that anything is working.
+
+### When a stub is the wrong answer
+
+Most stubs are small and honest. Some are not, and `--journey`'s debt table is
+how you spot them: a step needing a dozen or more placeholders is a
+dependency-wiring file — a DI module, a router, a bootstrap — and asking a reader
+to invent fourteen files is not a lesson, it is a puzzle.
+
+For those, stub **the whole file** behind one placeholder and teach it near the
+end, when the things it wires already exist:
+
+> `stubs=[dict(path='lib/core/di/app_di.dart', note='One empty module. Everything else in this phase imports it; it imports nothing back yet.')]`
+
+One gap, clearly labelled, replaced by a real lesson once there is something real
+to wire. That is a better reader experience than fourteen small lies.
+
+## Ordering within a slice
+
+The dependency sort has not been demoted, it has been given its actual job. It is
+the right axis *inside* a slice — the handful of files that implement one idea
+and genuinely need each other in a fixed sequence.
+
+`utils.ts` before `api.ts`, `schema` before `repository`, `types` before anything
+that imports them. `scan.py` does this mechanically, keeping directory/size order
+as the tie-break so two scans of an unchanged repository produce the same list.
+Pass `--no-deps` to see the raw directory order instead — useful precisely
+because it is what you are arguing against.
+
+So: journey order for the spine, dependency order within each slice, and stubs
+for every place the spine runs ahead of the graph.
 
 ### The rule this exists to prevent
 
-**No lesson may use a name that a later lesson defines.** A reader follows the
-order and writes each file as they go, so a step referencing a class introduced
-three steps later is not an inconvenience — it is a step that cannot be
-completed. The code does not compile at the point the reader is told to write
-it, and the lesson never says where the missing piece came from.
+**No lesson may use a name that a later lesson defines — unless it declares that
+name in `stubs=`.** A reader follows the order and writes each file as they go,
+so an undeclared forward reference is not an inconvenience, it is a step that
+cannot be completed: the code does not compile at the point the reader is told to
+write it, and the lesson never says where the missing piece came from.
 
 `check_site.py` checks this and names both lessons, so it reads like a compile
 error rather than something the reader has to diagnose:
 
 ```
 content/025-result-contract.html: step 25 uses AppFailure, which is not
-defined until step 26 — move that lesson earlier or teach AppFailure before
-anything that needs it
+defined until step 26 — move that lesson earlier, list AppFailure in this
+lesson's stubs=, or teach it before anything that needs it
 ```
 
-The common instance of this is an error type defined one file away from the
-`Result` wrapper that carries it: the wrapper is more interesting, so it gets
-the lower number, and the two files are otherwise interchangeable in size.
+Under leaf-first ordering the common instance is an error type defined one file
+away from the `Result` wrapper that carries it: the wrapper is more interesting,
+so it gets the lower number, and the two files are otherwise interchangeable in
+size. Under journey order it is every step, which is why `stubs=` exists.
+
+Break cycles by judgement. Mutual imports exist and are legal in most of these
+languages, so the sort emits them in seed order rather than refusing. Put the
+lower-level file first and note the cycle on the later page — a reader who hits it
+deserves to know the author saw it too. `scan.py` lists the cycles it found.
+
+Where a slice has no dependencies at all (a folder of independent components),
+sort alphabetically so the order is predictable and reproducible.
+
+## Finding the journey
+
+The journey is not in the import graph, so it has to be read out of the
+repository. Four passes, in order.
+
+1. **Find the entry point and read it.** Not what it imports — what it *does*.
+   `main.dart` that builds a `MaterialApp` and hands off to a router tells you
+   the first three lessons: manifest, app widget, entry point. That is a working
+   app, and it is lesson three.
+2. **Find the first thing a user can see.** Follow from the entry point to the
+   first screen, ignoring everything below it. That file, plus the stub list it
+   needs, is your second or third lesson. This is the step that justifies the
+   whole order, so give it a real `preview=` — "run it, four tabs, three grey
+   cards each" is worth more than any amount of prose about why grids exist.
+3. **Work outward from what they can see, one layer at a time.** Each layer is
+   what the previous layer reaches for. `scan.py --journey` does this
+   mechanically and prints the debt for each step; your job is to decide which of
+   those layers become lessons now and which stay stubbed until later.
+4. **Decide where the wiring goes.** Dependency injection, routers, bootstraps
+   and registries import the whole application and are taught by nobody early.
+   Find them, and put them near the end. This is the one place leaf-first is
+   simply correct, and the journey draft's very high placeholder counts for those
+   files are the signal.
+
+The last pass is the one that matters and the one most often skipped. A journey
+order without a deliberate ending — where the wiring finally lands and every
+stub is paid off — is just the first half of the curriculum.
 
 ## Files that do not make good lessons
 
@@ -238,7 +442,7 @@ the ecosystem better than a table here does.
 
 ## A worked example
 
-The ordering decision for a small Flask API, from directory listing to phases:
+The ordering decision for a small Flask API, from directory listing to lessons:
 
 ```
 app/
@@ -252,19 +456,36 @@ app/
 tests/
 ```
 
-becomes
+A dependency sort puts `models.py` third and `__init__.py` last, which is
+correct and useless: the reader builds an ORM for twenty minutes before anything
+responds to a request.
 
-| # | phase | file |
-|---|---|---|
-| 1 | Toolchain | `pyproject.toml` |
-| 2 | Toolchain | `.env.example` |
-| 3 | Toolchain | `requirements.txt` |
-| 4 | Domain | `app/__init__.py` — the factory |
-| 5 | Config | `app/config.py` |
-| 6 | Data | `app/models.py` |
-| 7 | Interfaces | `app/routes/__init__.py` |
-| 8 | Interfaces | `app/routes/users.py` |
-| 9 | Interfaces | `app/routes/orders.py` |
+A journey order puts the thing that responds first:
+
+| # | phase | file | |
+|---|---|---|---|
+| 1 | Toolchain | `pyproject.toml` | |
+| 2 | Toolchain | `.env.example` | |
+| 3 | Domain | `app/models.py` | slice: `models.py` is the one file with no dependencies |
+| 4 | Interfaces | `app/__init__.py` — the factory | **stubs** `config` |
+| 5 | Interfaces | `app/routes/__init__.py` | **stubs** `users`, `orders` |
+| 6 | Interfaces | `app/routes/users.py` | first request answered — `preview=` |
+| 7 | Interfaces | `app/routes/orders.py` | |
+| 8 | Config | `app/config.py` | every stub above is retired here |
+
+Two things to notice.
+
+Lesson 4 stubs `config` — the factory reads it immediately, so the reader
+invents a class with the right attributes and no behaviour. Lesson 8 pays that
+off. Same for `users` and `orders` at lesson 5. Every stub on this list is
+retired, which is what `stubs_are_retired` checks and what stops the placeholder
+from becoming the lesson.
+
+And lesson 8 is last. Config is a leaf, so the dependency sort would have put it
+first; the journey order puts it last because nothing about the app is visible
+without it, and because by lesson 8 the reader has seen three different things
+reach for it and can be told what it is *for*. That is the trade in one row:
+leaf-first is cheaper to compile, journey-first is worth more to read.
 
 Note what is *not* there: `requirements.lock`, `tests/`. The tests are worth a
 mention on the pages of the code they exercise, not a lesson each — unless

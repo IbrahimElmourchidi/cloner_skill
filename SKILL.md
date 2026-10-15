@@ -2,8 +2,9 @@
 name: clone-site
 description: >
   Turn any software repository into a step-by-step teaching site: one static HTML
-  page per source file, in dependency order, each carrying the real file contents
-  plus a plain assessment of whether its choices are good ones. Works for any
+  page per source file, in the order a developer actually works, each carrying the
+  real file contents plus a plain assessment of whether its choices are good ones.
+  Works for any
   programming language or ecosystem — Flutter, React, Django, Rust, Go, Rails, a
   CLI, a monorepo, anything. Use this whenever the user wants to explain a
   codebase, teach how it was built, produce a file-by-file walkthrough, write a
@@ -11,7 +12,7 @@ description: >
   up the multi-page docs site that lives at docs/site — even if they never say
   "site", "skill", or "generator", and even if the project is not the one this
   skill was last used on.
-version: 2.0.0
+version: 2.1.0
 user-invocable: true
 argument-hint: "[init|scan|plan|sync|build|render|appendix|check|split|renumber|next]"
 license: MIT
@@ -20,8 +21,9 @@ license: MIT
 # Clone a repository into a step-by-step site
 
 A directory of plain HTML files that opens from `file://`, loads nothing over the
-network, and needs no build tooling to view. One page per source file, ordered so
-every file exists before the one that depends on it.
+network, and needs no build tooling to view. One page per source file, in the
+order a developer would build it — so the reader gets something that runs early,
+and what is underneath it is stubbed until its turn comes.
 
 Language-agnostic by construction: the generator holds no project names, the
 highlighter covers ~71 languages and degrades to plain text for the rest, and
@@ -98,11 +100,54 @@ done. Use `why=None` — and only that — for a step that writes no file.
 </why_first>
 
 <forward_reference>
-No lesson may use a name that a later lesson defines. A reader follows the order
-and writes each file as they go, so a step referencing a class introduced three
-steps later cannot be completed — the code does not compile at the point they are
-told to write it. `check_site.py` names both lessons when this happens.
+No lesson may use a name that a later lesson defines — unless it declares that
+name in `stubs=`. A reader follows the order and writes each file as they go, so
+a step referencing a class introduced three steps later cannot be completed — the
+code does not compile at the point they are told to write it. `check_site.py`
+names both lessons when this happens.
+
+The exception is deliberate and narrow. See the `stub` invariant below.
 </forward_reference>
+
+<stub>
+`stubs=` on a lesson declares the placeholders the reader has to invent for that
+step to compile: the file that does not exist yet, the type names it must define,
+and where the real one lands.
+
+```python
+stubs=[dict(path='lib/catalog/domain/usecases.dart',
+            names='CatalogUsecase, HomeFeedType',
+            real='Phase 4 &middot; Catalog domain',
+            note='Every method returns an empty list.')]
+```
+
+Two rules, and the validator holds both:
+
+- **Declare it or do not do it.** An undeclared forward reference stays an error.
+  A stub is the reader being told what to write; without it they meet a compile
+  error and a name, and nothing else.
+- **Every stub is retired.** A *later* lesson must carry that same `path=`. A
+  placeholder nobody replaces is a placeholder taught as the answer. There is no
+  `retired=` field to maintain: retirement is matched against later `path=`
+  values, so a stub that is never paid off is reported rather than remembered.
+
+A stub is metadata on the consuming lesson, never a lesson of its own. The same
+path is therefore never taught twice, and `sync.py` stays unambiguous.
+</stub>
+
+<preview>
+`preview=` is what the reader can now see that they could not before — one or two
+plain sentences, present tense. On any step that makes the project *do*
+something rather than merely compile, not optional.
+
+Without it, a lesson that wires up a screen and a lesson that renames a helper
+look identical from the outside, and a reader who followed the order cannot tell
+that anything is working until the very end.
+
+Set it where it changes, not where it is comfortable: "Run it. Home shows four
+tabs, each with three grey cards" tells the reader more than any amount of prose
+about why the grid exists.
+</preview>
 
 <refer_by_role>
 Refer to another lesson by what it does — "the routing lesson", "the config
@@ -247,7 +292,7 @@ Invoked as `/clone-site COMMAND`. Optional argument narrows the target.
 | Command | Argument | Does | Go to |
 |---|---|---|---|
 | `init` | project path | Scaffold a site: copy the generator in, write the config, build, validate. | [below](#commands) |
-| `scan` | project path | Inventory the repo and draft a step order from the real import graph. | [step 1](#1-inventory-the-project) |
+| `scan` | project path, `--journey` | Inventory the repo and draft a step order. `--journey` starts at the entry points and prints the stub debt; the default sorts leaf-first. | [step 1](#1-inventory-the-project) |
 | `plan` | project path, `--context "…"` | Read the project, design the phases, write `pages.py`, present the plan. | [step 2](#2-design-the-curriculum) |
 | `sync` | site path | Compare the site against the repository; act on what moved. | [Keeping the site honest](#keeping-the-site-honest) |
 | `appendix` | topic, or none | Propose the appendix topics, then write them. | `references/appendix.md` |
@@ -360,20 +405,34 @@ no project name appears anywhere in the generator.
 
 ```bash
 python3 $SKILL/scripts/scan.py ~/code/my-project
+python3 $SKILL/scripts/scan.py ~/code/my-project --journey   # breadth-first from the entry point
 python3 $SKILL/scripts/scan.py ~/code/my-project --json     # machine-readable
 python3 $SKILL/scripts/scan.py ~/code/my-project --write    # pages.py draft
 ```
 
-The draft is sorted by the **real import graph**: it reads the import lines,
-builds the graph over the files it is teaching, and topologically sorts them, so
-a module comes after everything it depends on. Where two files have no
-dependency between them the tie-break is directory, then size, so two scans of
-an unchanged repository produce the same list. Pass `--no-deps` to see the raw
-directory order — useful precisely because it is what you are arguing against.
+Two orders, and choosing between them is the first real decision in the build.
 
-The sort knows that `b.py` imports `a.py`. It does not know that a reader needs
-the domain before the wiring, or that a file does not deserve a lesson at all.
-Read the result and argue with it.
+**`--journey` — breadth-first from the entry points.** This is the order a
+developer works in: the thing that runs first, then what sits underneath it,
+then what sits underneath that. The scan walks the import graph outward from
+`main` and prints, for each step, how many files it reaches for that are taught
+later — the **stub debt**, and the bill for this order. Almost every step has
+some; that is what the order costs, and `stubs=` is how you pay it.
+
+**Default — leaf-first by the import graph.** Where B imports A, A comes first.
+Correct for a library. For an application it means teaching the bottom of the
+stack for two hundred lessons and the reader seeing nothing run until the end.
+
+Both break ties by directory, then size, so two scans of an unchanged repository
+produce the same list. Pass `--no-deps` to see the raw directory order — useful
+precisely because it is what you are arguing against.
+
+Neither sort knows that a reader needs the domain before the wiring, or that a
+file does not deserve a lesson at all. Read the result and argue with it. One
+signal is worth reading carefully: a step in the journey draft with a dozen or
+more placeholders is a dependency-wiring file — a DI module, a router, a
+bootstrap — and the right answer is usually to leave the whole file stubbed
+behind one placeholder and teach it near the end.
 
 Useful flags: `--skip DIR` replaces the built-in skip list, `--include docs`
 re-enables a directory skipped by default (docs output is skipped by default, so
@@ -406,6 +465,26 @@ order** — there is no `n` field, because the step number is derived from the
 position and an entry that still declares an `n` contradicting its position is
 a hard error naming both. To insert, move or delete a lesson, move the entry.
 
+**Above about forty lessons, do not write `pages.py` in one pass.** A few hundred
+`dict(...)` entries is sixty kilobytes produced in a single edit, and the only
+way to change lesson 40 afterwards is to read and rewrite the whole file — which
+is how a curriculum gets re-emitted from a stale copy and loses an entry nobody
+notices. Write the lessons as `_build/_parts/NN.py`, one dict per entry, and let
+`join.py` concatenate them:
+
+```bash
+python3 $SKILL/scripts/join.py <site>/docs/site/_build --check --root <repo>
+python3 $SKILL/scripts/join.py <site>/docs/site/_build --root <repo>
+```
+
+The list is still one list; nothing downstream can tell. `pages.py` becomes
+**derived**: edit the parts, not the file. Everything outside the `PAGES = [...]`
+span — the field docstring, and the `APPENDIX` below it — is preserved byte for
+byte. `--check` validates without writing, and `--split N` goes the other
+direction if you want to start over. Part filenames must be zero-padded
+(`part02.py`, never `part2.py`), because filename order is reading order and
+`part10` sorts before `part2`.
+
 `slug` names three things at once: the content fragment, the page URL, and the
 reader's saved-progress key. It must never start with the step number, and it
 must never change for a lesson you only renumbered — that is what makes
@@ -414,6 +493,11 @@ reordering free.
 `why` is **required** on any lesson that writes a file, and `why=None` is the
 explicit opt-out for a step that writes none. "Not written yet" and "does not
 apply" are different facts and the field keeps them apart.
+
+`preview` and `stubs` carry a journey-ordered site. Set `preview` wherever a step
+changes what the reader can see; set `stubs` wherever the step reaches for
+something taught later — which, in a journey order, is most of them. Both are
+invariants above.
 
 ### 3. Author and build
 

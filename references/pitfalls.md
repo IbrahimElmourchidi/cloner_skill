@@ -9,6 +9,7 @@ pattern, the reason it is dangerous, and what to do instead.
 - [The pipeline](#the-pipeline)
 - [Identity](#identity)
 - [Completeness](#completeness)
+- [Ordering](#ordering)
 
 Every entry is a bug that was actually hit while building a 492-lesson site.
 None produced an error — each produced output that looked correct and was wrong,
@@ -328,4 +329,105 @@ refactor had dropped the code. The work looked done.
 validate that, or delete it. If it needs an opt-out, make the opt-out explicit
 (`why=None`) so that "not written yet" and "not applicable" stay different
 facts — and check for the first, not the second.
+
+## Ordering
+
+### The reader compiles it and nothing renders
+
+**PATTERN**: ordering the curriculum by the import graph, leaf first, and
+believing that every step compiling is the goal.
+
+**WHY**: in an application the file that runs imports everything, so the sort
+puts it last. The reader then spends two hundred lessons building the bottom of
+the stack — every file correct, every build green — and sees the program do
+anything roughly never. It is the most expensive kind of wrong because nothing
+reports it: the checks all pass, the prose is good, and the site is a very long
+arrangement of things that do not yet add up to a program.
+
+The same argument in reverse is why journey order has a price. Write the home
+page first and it imports a catalogue that does not exist. That step is
+unbuildable, and it is unbuildable *on purpose* — the order is right and the
+reader needs to be told what to write.
+
+**REWRITE**: `scan.py --journey` walks outward from the entry points, which is
+the order a developer works in, and prints the debt each step takes on. Set
+`preview=` wherever a step changes what the reader can see, so the payoff is
+written down rather than assumed. Pay for every gap with `stubs=`: the file, the
+type names the placeholder must define, where the real file lands, and what it
+does meanwhile. Keep leaf-first for the slices *inside* the spine and for the
+wiring at the end — a router and a DI module are genuinely last, and a high
+placeholder count on those two files is the signal saying so.
+
+### A stub nobody retires
+
+**PATTERN**: declaring a placeholder so a step compiles, and never replacing it.
+
+**WHY**: a placeholder nobody pays off is a placeholder taught as the answer. The
+reader reaches the "real" lesson, finds a file that was never written, and has
+no way to know whether the empty list is a design decision or the teacher ran out
+of time. It is also invisible: the step compiles, the validator has nothing to
+compare against, and the site builds clean.
+
+**REWRITE**: retirement needs no bookkeeping field — that is the whole design.
+A stub is retired the moment a *later* lesson carries that same `path=`, so
+`stubs_are_retired` can check both directions from the data already in
+`pages.py`. Two failures, and they are different mistakes: never replaced (the
+real file was left out of the curriculum) and replaced *before* the stub (the
+order is wrong, and the reader is being asked to build a placeholder they
+already have).
+
+### A stub declared where a placeholder should be
+
+**PATTERN**: using `stubs=` to excuse a forward reference that was simply the
+wrong order.
+
+**WHY**: stubs are a payment, not an excuse. Every one of them is a place the
+reader is told to write a file that is not the file, and the cost is paid in
+their trust. A curriculum with sixty stubs is not journey-ordered, it is
+dependency-ordered with extra steps and a lot of lying.
+
+**REWRITE**: the exception exists so an outcome-first order is possible, not so
+the forward-reference check can be turned off. If a step needs a placeholder,
+ask whether that file belongs there at all — usually the answer is that it
+belongs to the wiring, and the wiring belongs at the end. `scan.py --journey`
+prints a per-step placeholder count; a step needing a dozen is a DI module or a
+router in disguise. Stub the whole file behind one clearly-labelled placeholder
+and teach it late, rather than inventing fourteen small ones.
+
+### Filename order is reading order
+
+**PATTERN**: naming curriculum parts `part2.py`, `part10.py`, and sorting them
+with a glob.
+
+**WHY**: `part10.py` sorts before `part2.py`, so ninety lessons move. Nothing
+else reports it. The build is green, the validator is green, the sidebar numbers
+correctly — because the step number is derived from *position*, and position
+followed the sort. What changed is that lesson 200 is no longer the thing you
+wrote, or that a phase boundary now falls in the middle of a file.
+
+This is [a display number doubling as a storage key](#a-display-number-doubling-as-a-storage-key)
+one level up: the sort order is carrying an identity it has no way to check.
+
+**REWRITE**: zero-pad part filenames — `02.py`, `10.py` — and refuse the
+unpadded ones rather than warning. An unpadded name is not wrong yet but is one
+lesson away from being wrong, and nothing else in the toolchain would catch it.
+The same applies to any ordered set of files a curriculum depends on.
+
+### A hand-edited page that is derived
+
+**PATTERN**: editing a generated file because it is easier to find than the
+source, then watching the change disappear.
+
+**WHY**: `pages.py` becomes an output the moment a `_parts/` directory exists.
+Reading `pages.py` to find the lesson you want to change is entirely reasonable
+— it is the one file that shows the whole curriculum at once — and making the
+change there feels like editing the truth. The next `join.py` takes it back
+without a word, and because `join.py` *did* run, the reversion reads as the site
+disagreeing with itself rather than as a stale write.
+
+**REWRITE**: say out loud, at the point of adoption, that `pages.py` is now an
+output. Read `pages.py` freely — that is what it is for — but edit the part. And
+run `join.py --check` after every write: a curriculum one join out of date is a
+five-second fix, and a silently short one is a site nobody notices is wrong
+until a reader writes to a file that is not there.
 

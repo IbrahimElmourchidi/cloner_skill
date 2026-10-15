@@ -100,6 +100,55 @@ pub struct Page {
     pub phase: Option<String>,
     #[serde(default)]
     pub why: Option<String>,
+    /// What the reader can see after this step that they could not see before.
+    ///
+    /// The payoff line, and the reason a journey-ordered site is legible at all:
+    /// without it a lesson that wires up a screen and a lesson that renames a
+    /// helper look identical from the outside, and a reader who followed the
+    /// order has no way to tell anything is working.
+    #[serde(default)]
+    pub preview: Option<String>,
+    /// Placeholders the reader has to invent for this step to compile.
+    ///
+    /// A journey-ordered site reaches for something that does not exist yet,
+    /// and this is the reader being told what to write instead. A stub is
+    /// metadata on the consuming lesson rather than a lesson of its own, so the
+    /// same `path` is never taught twice — which is what keeps retirement
+    /// checkable against the entries that follow.
+    #[serde(default)]
+    pub stubs: Vec<Stub>,
+}
+
+/// One placeholder. `path` is the whole point: it is the file the reader has to
+/// invent, and it is matched against later entries' own `path` to decide whether
+/// the stub was ever paid off. `real` is raw prose, so a phase name may carry
+/// its `&middot;` on purpose; `names` and `note` are escaped at render time.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct Stub {
+    pub path: String,
+    #[serde(default)]
+    pub names: Option<String>,
+    #[serde(default)]
+    pub real: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+impl Stub {
+    /// An optional prose field, treating "absent" and "empty" as one thing.
+    ///
+    /// TOML has no null, so `real = ""` is the only way to write an absent
+    /// value. Rendering it would produce `replaced in .`, which is worse than
+    /// leaving the clause out entirely.
+    pub fn prose<'a>(which: &str, s: &'a Stub) -> Option<&'a str> {
+        let raw = match which {
+            "names" => s.names.as_deref(),
+            "real" => s.real.as_deref(),
+            "note" => s.note.as_deref(),
+            _ => None,
+        };
+        raw.filter(|v| !v.trim().is_empty())
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]

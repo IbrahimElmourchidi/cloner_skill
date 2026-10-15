@@ -132,6 +132,24 @@ main > .key, main > .eyebrow, main > .srcpath, main > hr{max-width:1500px}
 }
 .srcpath b{color:var(--ink);font-weight:600}
 
+/* What the reader can now see, and what they have to invent to compile.
+   Both are journey-order concepts: the first is the payoff for ordering a
+   lesson by what a developer would do rather than by the import graph, the
+   second is the price of that choice, stated next to the file that replaces it. */
+.preview,.stubs{
+  font-size:14px;line-height:1.6;color:var(--muted);
+  border-left:3px solid var(--teal);padding:6px 0 4px 10px;margin:12px 0 0;
+}
+.stubs{border-left-color:var(--amber)}
+.preview b,.stubs b{color:var(--ink);font-weight:600}
+.preview code,.stubs code{
+  font-family:var(--f-mono);font-size:12.5px;background:var(--surface2);
+  border:1px solid var(--line);border-radius:4px;padding:1px 4px;
+}
+.stubs ul{margin:6px 0 0;padding-left:18px}
+.stubs li{margin:2px 0}
+.steptop > :last-child{padding-bottom:14px;margin-bottom:0}
+
 /* Why this artifact exists — the one thing a step must answer before its code. */
 .steptop .why{
   font-size:14.5px;line-height:1.62;color:var(--ink);
