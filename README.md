@@ -100,23 +100,30 @@ Or use the wrapper, which resolves its own location:
 docs/site/
 ├── index.html              overview + full table of contents
 ├── assets/                 design system, syntax highlighting
-├── NNN-slug.html           one page per lesson
+├── <slug>.html             one page per lesson
 └── _build/
     ├── config.py           ← the only project-specific file
     ├── pages.py            ← what exists, in what order
-    └── content/NN.html     ← one fragment per lesson
+    ├── manifest.json       ← what each lesson was built from  (generated)
+    └── content/<slug>.html ← one fragment per lesson
 ```
 
 `config.py` and `pages.py` are yours. Everything else is copied verbatim and can
 be updated later without touching your content.
+
+Fragments are named after the **slug**, not the step number, and the step
+number is derived from each entry's position in `pages.py`. Reordering is
+therefore a move within one list — no renumbering, no renaming, and no reader's
+saved progress invalidated.
 
 ## The commands
 
 | Command | Does |
 |---|---|
 | `bootstrap.py PROJECT --name NAME` | Copies the generator in, writes a config, builds, and validates. Exits non-zero if the result is not valid. |
-| `scan.py PROJECT` | Inventories the repo: languages, line counts, manifests, entry points, and a draft step order. `--json`, `--write`, `--skip DIR`, `--include DIR` |
-| `build.py` | Renders `pages.py` + `content/` into pages. Prunes stale ones. |
+| `scan.py PROJECT` | Inventories the repo: languages, line counts, manifests, entry points, and a draft step order sorted by the real import graph. `--json`, `--write`, `--no-deps`, `--skip DIR`, `--include DIR` |
+| `build.py` | Renders `pages.py` + `content/` into pages. Prunes stale ones. `--incremental` rewrites only the pages whose fragment changed. |
+| `sync.py` | Compares the site against the repository: what was added, modified, renamed, deleted. Dry run by default. `--apply`, `--root DIR`, `--yes` |
 | `index.py` | Regenerates `index.html`. |
 | `check_site.py` | Tag balance, duplicate ids, links, anchors, prev/next chains, `data-lang`, emoji. Prints `BAD: none`. Validates content fragments first, with `file:line`. |
 | `check_svg.py` | Diagram geometry: overlapping text, text crossing a box it does not belong to, anything outside the `viewBox`. Prints `problems: 0`. |
@@ -161,9 +168,10 @@ Invoked as `/clone-site COMMAND` once the agent has restarted.
 |---|---|---|
 | `init` | project path | Scaffold a site: copy the generator in, write the config, build, validate |
 | `scan` | project path | Inventory the repo and draft a step order |
-| `plan` | project path, `--context "…"` | Read the project, design phases, write `pages.toml`, present the plan |
+| `plan` | project path, `--context "…"` | Read the project, design phases, write `pages.py`, present the plan |
 | `appendix` | topic, or none | Propose the appendix topics, then write them |
 | `build` | batch size, default 10 | Author that many lessons, write them to disk, render, validate, then stop and ask |
+| `sync` | site path | Compare the site against the repository; act on what moved |
 | `render` | — | Re-render every page and validate, changing no content |
 | `check` | `fragments` \| `pages` | Validate without rebuilding |
 | `split` | step number | Break one oversized lesson into several |
@@ -182,6 +190,49 @@ or on a site someone else wrote.
 
 `split` and `renumber` are almost always used together, since splitting shifts
 every later number. Both carry their own reference file.
+
+## Scenarios
+
+What to run, given what happened to the repository. A site is not a one-shot
+export — the code keeps moving after the lessons are written, and this is how
+the two get back together.
+
+| What happened | Run | What it does |
+|---|---|---|
+| **Starting new** | `init` → `plan` → `build N` → `render` | The full arc. `init` scaffolds and self-validates, `plan` stops for your approval, `build` writes lessons in batches. |
+| **You edited a file** | `sync`, then re-author, then `render` | Reports `MODIFIED`. It does **not** rewrite the page — the prose around the code is about that code, so a changed value needs a changed explanation. |
+| **You added a file** | `sync` → author a lesson | Reports `ADDED` as a candidate. It never invents a lesson: deciding what a reader needs means reading the file. |
+| **You deleted a file** | `sync --apply` → `render` | Reports `DELETED` and removes the entry, the fragment and the generated HTML. The lesson disappears from the list entirely. |
+| **You renamed a file** | `sync --apply` | Reports `RENAMED` and updates `path=`. The contents are identical, so the lesson is untouched. |
+| **A file is gone and `sync` can't prove why** | `sync` | Reports `ORPHANED` and **changes nothing**. Its bytes were never seen in the repository, so this may be a deletion, or a file that moved outside the scan root, or a lesson that was hand-added and never existed. Yours to decide. |
+| **You inserted or reordered a lesson** | move the entry in `pages.py`, then `render` | Nothing else changes: the number is derived, the fragment and URL follow the slug. |
+| **Only prose changed** | `render` | No `sync` needed — `sync` is about the repository, not about you. |
+| **You split a big file** | `split` → `renumber` → `render` | Split the *source file*, then each part is its own whole lesson. |
+
+```bash
+clone-site sync                # dry run; changes nothing
+clone-site sync --apply        # act on the two provable cases
+clone-site sync --apply --yes  # and do not stop to ask
+```
+
+`--apply` only touches `RENAMED` and `DELETED`, because those are the two it can
+*prove*: a file is definitely gone only if its contents appear nowhere in the
+repository. `ADDED`, `MODIFIED` and `ORPHANED` are reported and left alone.
+
+Everything depends on `_build/manifest.json`, which each build writes and which
+records the path a lesson teaches plus a hash of both the source file and the
+fragment. Without it "has this changed since I wrote the page?" is not merely
+unchecked — it is unanswerable, which is why `sync` could not exist before v2.
+
+If your site predates v2, migrate it first — it renames the fragments and drops
+the now-derived `n=`:
+
+```bash
+python3 ~/.agents/skills/clone-site/scripts/migrate.py docs/site --to v1.1-to-v2.0 --apply
+```
+
+It is a dry run without `--apply`, writes `.bak` beside anything it rewrites, and
+reports anything it will not guess at.
 
 ## Building a full site
 
@@ -203,13 +254,19 @@ green `init` means the plumbing works and everything after it is prose.
 
 ### 2. `plan` — gate
 
-Reads the project properly, designs the phases, writes `pages.toml`, then
+Reads the project properly, designs the phases, writes `pages.py`, then
 **presents the plan and stops.** You approve or correct the order before a single
 lesson exists.
 
-The draft order `scan` produces is sorted by directory and then file size, which
-is a poor dependency order — it cannot see that one module imports another — so
-this step is an argument with a draft, not a rubber stamp. Ask for just the
+The draft order `scan` produces is a **topological sort of the real import
+graph** — it reads the import lines, resolves them to files, and puts each
+module after everything it depends on, using directory order only as the
+tie-break so two scans of an unchanged repo agree. Pass `--no-deps` to see the
+raw directory order instead, which is what you are arguing against.
+
+The sort knows that `b.py` imports `a.py`. It does not know that a reader needs
+the domain before the wiring, or that a file does not deserve a lesson at all,
+so this step is an argument with a draft, not a rubber stamp. Ask for just the
 inventory with `/clone-site scan ~/code/my-project`.
 
 ### 3. `build 10` — the loop
